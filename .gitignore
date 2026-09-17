@@ -35,13 +35,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# validator outputs
+# validator outputs (build caches, never source); profiles/ and fixtures/ are
+# tracked source (the reviewed profiles, the fixed component and the protected
+# host fixtures), only the generated host bundles under browser/dist are ignored
 /dist
 /.local
-/fixtures/host/browser/dist
-
-# profiles
-/profiles
-
-# fixtures
-/fixtures/
+/fixtures/host/
