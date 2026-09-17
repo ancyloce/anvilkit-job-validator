@@ -314,10 +314,11 @@ describe("independent certification of the fixed component", () => {
 	it("rejects a candidate that forges an SSR success report without rendering", async () => {
 		// Through the real source-read, build and certification path: a candidate
 		// that, when imported by the SSR render child, prints a fully successful
-		// report and exits before rendering. It cannot know the harness's per-run
-		// nonce, so its forged line is ignored and the trusted harness — which
-		// never imports the candidate and writes the report itself — records no
-		// completed render. Candidate-written reports cannot establish SSR success.
+		// report to stdout and exits before rendering. The trusted harness reads
+		// its verdict from the rendered HTML the child writes, not from anything
+		// the child prints, so a candidate that exits without rendering leaves no
+		// HTML file and the harness records no completed render. Candidate-written
+		// reports cannot establish SSR success.
 		const f = path.join(build.packageDir, "dist", "index.js");
 		const original = readFileSync(f, "utf8");
 		const forge = [
@@ -342,7 +343,79 @@ describe("independent certification of the fixed component", () => {
 		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
 		const ssr = cert.host.ssr as { ok?: boolean; errors?: string[] };
 		expect(ssr.ok).toBe(false);
-		expect((ssr.errors ?? []).join(" ")).toMatch(/no trusted result/);
+		expect((ssr.errors ?? []).join(" ")).toMatch(/produced no rendered output/);
+	});
+
+	it("rejects a candidate that throws during SSR while poisoning the serialization primitives (P10-F01)", async () => {
+		// The render child no longer assembles the trusted result with the same
+		// JavaScript environment's JSON.stringify and process.stdout.write after
+		// importing the candidate, so a candidate cannot rewrite the report to
+		// hide a real render failure. This module keeps the whole static contract
+		// (imports the host's React, exports Hero/config/default, ships the fixed
+		// CSS) but its render throws, and at import it poisons JSON.stringify and
+		// process.stdout.write to forge a fully successful SSR report — exactly the
+		// evidence the OLD render child would have emitted. With the fix the trusted
+		// harness reads the rendered HTML the child writes (a throwing render writes
+		// none) and never the poisoned serialization, so the actual SSR failure is
+		// rejected through the normal readSource → buildComponent → certify flow.
+		const texts = [
+			"Build once, certify exactly",
+			"A reviewed fixed component: complete source, protected build, independent verdict.",
+			"Get started",
+		];
+		const forged = JSON.stringify({
+			ok: true,
+			exports: ["Hero", "config", "default"],
+			fields: ["align", "ctaLabel", "subtitle", "title"],
+			reactVersion: "19.3.0",
+			directHtml: `<section>${texts.map((t) => `<p>${t}</p>`).join("")}</section>`,
+			puckHtml: `<section>${texts.map((t) => `<p>${t}</p>`).join("")}</section>`,
+		});
+		const module = `import { createElement } from "react";
+if (typeof process !== "undefined" && typeof window === "undefined") {
+	const realStringify = JSON.stringify;
+	const forged = ${JSON.stringify(forged)};
+	// Rewrite any ok:false report the render child would serialize into a forged success.
+	JSON.stringify = (v, ...rest) =>
+		v && typeof v === "object" && "errors" in v && (v.ok === false || v.ok === undefined) ? forged : realStringify(v, ...rest);
+	// And rewrite anything the render child writes to stdout, keeping any nonce it carries.
+	const realWrite = process.stdout.write.bind(process.stdout);
+	process.stdout.write = (chunk, ...rest) => {
+		if (typeof chunk === "string" && chunk.includes("ANVILKIT")) {
+			const marked = chunk.replace(/\\{.*\\}/, forged);
+			return realWrite(marked, ...rest);
+		}
+		return realWrite(chunk, ...rest);
+	};
+}
+export function Hero() {
+	return null;
+}
+export const config = {
+	fields: { title: { type: "text" }, subtitle: { type: "textarea" }, align: { type: "radio" }, ctaLabel: { type: "text" } },
+	defaultProps: { title: ${JSON.stringify(texts[0])}, subtitle: ${JSON.stringify(texts[1])}, align: "left", ctaLabel: ${JSON.stringify(texts[2])} },
+	render() {
+		throw new Error("candidate SSR failure");
+	},
+};
+export default config;
+`;
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), module));
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: false },
+		});
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
+		const ssr = cert.host.ssr as { ok?: boolean; errors?: string[] };
+		expect(ssr.ok).toBe(false);
+		// The recorded failure is the real render throw (or a missing render), not
+		// the forged success the poisoned primitives tried to emit.
+		expect((ssr.errors ?? []).join(" ")).toMatch(/candidate SSR failure|produced no rendered output/);
+		expect(cert.complete).toBe(false);
 	});
 
 	it("treats a forged exit 0 as no evidence", async () => {
@@ -522,7 +595,32 @@ export default config;
 			resources: ["dist/assets/a b.svg", "dist/assets/mark.svg"],
 			selectors: [":root", ".a", ".b"],
 		});
+		// Escaped identifiers the older code missed (P10-F02): an escaped @import
+		// name, a url() and a src() parsed as Function nodes because of an escaped
+		// name, and an escaped image-set() name. css-tree leaves the identifiers
+		// escaped; ident.decode normalises them so each escaped form resolves under
+		// the same rules as its plain form and a valid packaged reference is
+		// recorded — escaped syntax is not rejected wholesale.
+		expect(
+			refs(
+				'@\\69 mport "base.css"; .a { background: \\73 rc("../assets/mark.svg"); } .b { background: image\\2d set("../assets/a%20b.svg" 1x, u\\72l("../assets/mark.svg") 2x); }',
+			),
+		).toEqual({
+			imports: ["dist/styles/base.css"],
+			resources: ["dist/assets/a b.svg", "dist/assets/mark.svg"],
+			selectors: [".a", ".b"],
+		});
 		const refused: Array<[string, RegExp]> = [
+			// Escaped forms are rejected under the same rules as their plain forms:
+			// remote through an escaped url()/src()/@import/image-set, an escaped
+			// reference that escapes the package, and an escaped missing resource.
+			['.x { background: u\\72l("https://cdn.example/a.png"); }', /only shipped relative resources/],
+			['.x { background: \\73 rc("https://cdn.example/a.png"); }', /only shipped relative resources/],
+			['@\\69 mport "https://cdn.example/reset.css";', /only shipped relative/],
+			['.x { background: image\\2d set("https://cdn.example/a.png" 1x); }', /only shipped relative resources/],
+			['.x { background: u\\72l("../../../escape.svg"); }', /escapes the package/],
+			['.x { background: \\73 rc("../assets/none.svg"); }', /which the package does not ship/],
+			['@\\69 mport "reset.css";', /which the package does not ship/],
 			[
 				'@import "https://cdn.example/reset.css";',
 				/references https:\/\/cdn.example\/reset.css; only shipped relative/,
