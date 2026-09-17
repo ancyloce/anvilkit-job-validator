@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "hostAbi": "host-abi-dev-v1",
+  "status": "DEVELOPMENT_ONLY",
+  "evidence": "Local React/Puck host fixture of jobs/validator (fixtures/host): an import map serving one React, one ReactDOM and one @puckeditor/core instance, CSS loaded before the module import, the module's default export registered as a Puck component. No real Studio host, CSP or resource origin has been observed (ENV-08 pending); this ABI qualifies nothing outside the validator's own fixture.",
+  "moduleFormat": "esm",
+  "externals": {
+    "@puckeditor/core": "0.23.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-dom/client": "19.3.0",
+    "react/jsx-runtime": "19.3.0"
+  },
+  "entryExports": {
+    "default": "puck-component-config",
+    "named": [
+      "config"
+    ]
+  },
+  "styles": "separate-css-loaded-before-import",
+  "profileDigest": "sha256:d63fcf6465f8ca228bb98bd987d833ed0c0135dac8c0327c9a00cf6406a0a0bf"
+}

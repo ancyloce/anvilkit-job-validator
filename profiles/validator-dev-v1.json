@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "profileId": "validator-dev-v1",
+  "revision": "1",
+  "status": "DEVELOPMENT_ONLY",
+  "buildProfileId": "build-support-dev-v1",
+  "hostAbi": "host-abi-dev-v1",
+  "toolchain": {
+    "rollup": "4.63.3",
+    "rollupPluginTypescript": "12.3.0",
+    "tslib": "2.8.1",
+    "playwright": "1.62.1"
+  },
+  "checks": [
+    "source-contract",
+    "toolchain",
+    "protected-fixtures",
+    "npm-package",
+    "declarations",
+    "browser-module",
+    "css-resources",
+    "ssr-render",
+    "browser-host"
+  ],
+  "verdicts": {
+    "repairable": [
+      "CANDIDATE_BUILD_FAILED",
+      "CANDIDATE_TEST_FAILED",
+      "MISSING_CSS",
+      "INVALID_EXPORTS",
+      "DUPLICATE_RUNTIME"
+    ],
+    "invalid": [
+      "PATH_ESCAPE",
+      "PROTECTED_FIXTURE_ALTERED",
+      "RESULT_DIGEST_MISMATCH",
+      "DEADLINE_EXCEEDED"
+    ],
+    "infrastructure_failed": [
+      "OBSERVER_FAILED",
+      "PROFILE_UNQUALIFIED",
+      "IMAGE_PULL_FAILED",
+      "POD_EVICTED"
+    ],
+    "canceled": [
+      "CANCELED"
+    ]
+  },
+  "protectedFixtures": {
+    "fixtures/host/browser/host.tsx": "sha256:138885a64008ed5fb4dca78c704f4ad7c95480c49be98e46176123d82ae25668",
+    "fixtures/host/browser/index.html": "sha256:95d146f87623c4828d5906169fc7ca122023c0d2def920630f9b1475f0bf7b6c",
+    "fixtures/host/browser/observer.js": "sha256:07163377cccf7ddf5f539058bac95bf5e94d5c645d23982f6d020c3e0c8ba6ee",
+    "fixtures/host/ssr.mjs": "sha256:b5134b4e629d787a31f481188f9ab3fb7c9e03f44a6bbb733d3d2ad12e816c69"
+  },
+  "interaction": {
+    "counterAttribute": "data-clicks",
+    "increment": 1
+  },
+  "limits": {
+    "maxSourceFiles": 4096,
+    "maxSourceFileBytes": 4194304,
+    "maxSourceBytes": 33554432,
+    "maxBrowserModuleBytes": 1048576,
+    "maxNpmTarballBytes": 8388608,
+    "maxCssBytes": 1048576,
+    "buildTimeoutMs": 180000,
+    "hostCheckTimeoutMs": 120000
+  },
+  "profileDigest": "sha256:523fa78fbbc0a085edca0a2552c386dbba7d4713957d079c83e091448f030b66"
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "profileId": "build-support-dev-v1",
+  "revision": "1",
+  "node": "24.19.0",
+  "packageManager": "pnpm@12.3.4",
+  "typescript": "5.9.3",
+  "react": "19.3.0",
+  "puck": "0.23.0",
+  "hostAbi": "host-abi-dev-v1",
+  "allowedDependencies": {
+    "@puckeditor/core": "0.23.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "profileDigest": "sha256:fe94abf9bc3c159233d428eab9dbbbab7e824aa8c5d7662ae6bb7f6c3d350b2e"
+}
