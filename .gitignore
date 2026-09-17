@@ -39,3 +39,9 @@ next-env.d.ts
 /dist
 /.local
 /fixtures/host/browser/dist
+
+# profiles
+/profiles
+
+# fixtures
+/fixtures/
