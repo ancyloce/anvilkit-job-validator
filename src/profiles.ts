@@ -68,6 +68,14 @@ export interface ValidatorProfile {
 	checks: string[];
 	verdicts: Record<Exclude<Verdict, "certified">, string[]>;
 	protectedFixtures: Record<string, Digest>;
+	/**
+	 * Fixed-fixture interaction contract (DEVELOPMENT_ONLY): the DOM attribute
+	 * on the component's button that a real click must advance, and by how much.
+	 * Present only for the reviewed fixed component; absent means no interaction
+	 * outcome is required, so this never becomes a rule that every click must
+	 * change the DOM.
+	 */
+	interaction?: { counterAttribute: string; increment: number };
 	limits: {
 		maxSourceFiles: number;
 		maxSourceFileBytes: number;

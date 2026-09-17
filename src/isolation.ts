@@ -43,6 +43,13 @@ export interface StepOptions {
 	timeoutMs: number;
 	identity: StepIdentity;
 	maxOutputBytes?: number;
+	/**
+	 * Test seam: replaces how the step's processes are stopped (never set by
+	 * the Job or the CLI). It lets a test drive the failed-stop path — a stop
+	 * that does not establish the kill while the leader is still alive — and
+	 * assert that the step still settles within a bound as OBSERVER_FAILED.
+	 */
+	stop?: (leader: number, identity: StepIdentity) => Promise<{ signaled: number }>;
 }
 
 /** How a step's execution ended and whether the trusted process confirmed its stop. */
@@ -172,6 +179,11 @@ export function stepProcesses(
 
 const stopRounds = 300;
 const stopHelperBoundMs = 60_000;
+// The bound the final exit read must not exceed after a stop that could
+// not be established (a failed helper leaving the leader alive): without
+// it the step would wait for an exit that never comes. When the stop was
+// confirmed the leader has already been reaped, so this returns at once.
+const leaderExitBoundMs = 10_000;
 
 /**
  * Kills the step's group and then every live process of the step this
@@ -321,7 +333,7 @@ export function runStep(argv: string[], opts: StepOptions): Promise<StepOutcome>
 		const settle = async (reason: StepStop["reason"]) => {
 			const stop: StepStop = { reason, confirmed: false, signaled: 0 };
 			try {
-				stop.signaled = (await stopStep(leader, opts.identity)).signaled;
+				stop.signaled = (await (opts.stop ?? stopStep)(leader, opts.identity)).signaled;
 				// The leader must have been reaped (its exit collected here) and
 				// nothing of the step may remain on this process's own read.
 				if (!(await within(exited, stopHelperBoundMs))) throw new Error("the leader did not exit after the stop");
@@ -331,9 +343,15 @@ export function runStep(argv: string[], opts: StepOptions): Promise<StepOutcome>
 			} catch (err) {
 				stop.error = `stop not established: ${(err as Error).message}`;
 			}
-			// Descendants holding the pipes are gone now; collect what was written.
+			// Collect what the step left, but never wait past a bound: a stop
+			// that could not be established may leave the leader alive, and this
+			// must still resolve so the caller treats the step as unobserved
+			// (OBSERVER_FAILED) instead of hanging on an exit that never comes.
+			// A confirmed stop has already reaped the leader, so both reads
+			// return at once; the Job's own cleanup reclaims any survivor.
 			await within(closed, 5_000);
-			const { code, signal } = await exited;
+			const ended = await within(exited, leaderExitBoundMs);
+			const { code, signal } = ended ? await exited : { code: null, signal: null };
 			resolve({ code, signal, timedOut, stdout, stderr, durationMs: Date.now() - started, stop });
 		};
 		const timer = setTimeout(() => {

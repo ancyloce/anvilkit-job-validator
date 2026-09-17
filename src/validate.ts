@@ -197,6 +197,10 @@ export function stylesheetReferences(
 	const errors: string[] = [];
 	const ast = csstree.parse(text, {
 		positions: true,
+		// Parse custom-property values too (the default leaves `--x: …` and a
+		// var() fallback as Raw), so url() references inside custom properties
+		// and var() fallbacks are walked and reviewed like any other.
+		parseCustomProperty: true,
 		onParseError: (err) => errors.push(`${err.message} (line ${err.line ?? "?"})`),
 	});
 	if (errors.length) fail(`${rel} does not parse as CSS: ${errors[0]}`);
@@ -242,13 +246,21 @@ export function stylesheetReferences(
 				case "Url":
 					resources.add(resolve(node.value, "url()"));
 					return;
-				case "Function":
-					if (node.name.toLowerCase() === "src") {
+				case "Function": {
+					const fname = node.name.toLowerCase();
+					if (fname === "src") {
 						const first = node.children.first;
 						if (first?.type !== "String") return fail(`${rel}: src() without a reviewable target`);
 						resources.add(resolve(first.value, "src()"));
+					} else if (fname === "image-set" || fname === "-webkit-image-set") {
+						// Bare string entries of image-set() are resource references too;
+						// its url() entries are caught by the Url case below.
+						node.children.forEach((child) => {
+							if (child.type === "String") resources.add(resolve(child.value, "image-set()"));
+						});
 					}
 					return;
+				}
 				case "Rule":
 					selectors.push(node.prelude.type === "Raw" ? node.prelude.value : csstree.generate(node.prelude));
 					return;
@@ -619,15 +631,22 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				reactVersion?: string;
 			};
 			host.ssr = report;
+			// The module digest is the harness's own read of the built module from
+			// disk, not anything the candidate reported; a mismatch means the step
+			// observed other bytes than the observer handed over.
 			if (report.moduleDigest !== moduleDigest)
 				throw new CheckFailure("OBSERVER_FAILED", "the SSR report is not about the module the observer handed over");
+			// Whether the render completed is decided before the exports are read:
+			// a candidate that exits without rendering, or forges a report the
+			// trusted harness rejects, leaves no completed render — a candidate
+			// failure, not an exports mismatch.
+			if (report.ok !== true)
+				throw new CheckFailure("CANDIDATE_TEST_FAILED", (report.errors ?? []).join("; ") || "SSR render failed");
 			if ((report.exports ?? []).join("\n") !== browserExports.join("\n"))
 				throw new CheckFailure(
 					"INVALID_EXPORTS",
 					"the exports seen at runtime differ from the module's static exports",
 				);
-			if (report.ok !== true)
-				throw new CheckFailure("CANDIDATE_TEST_FAILED", (report.errors ?? []).join("; ") || "SSR render failed");
 			if (report.reactVersion !== profiles.host.externals.react)
 				throw new CheckFailure(
 					"PROFILE_UNQUALIFIED",
@@ -645,9 +664,17 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 		await run("browser-host", async () => {
 			bundles = await ensureHostBundles(profiles, input.toolchain);
 			const cssText: Record<string, string> = {};
+			// The resources each stylesheet references, already parsed statically
+			// with css-tree above (url(), src(), image-set() and @import in custom
+			// properties and var() fallbacks alike): the browser only confirms
+			// each loads, it does not re-extract them, so the isolated-world
+			// observer needs no CSS scanning of its own.
+			const cssResources: Record<string, string[]> = {};
 			for (const rel of decl.styles) {
 				const entry = byPath.get(`dist/${rel}`) as { digest: Digest };
-				cssText[`/candidate/dist/${rel}`] = packageBytes(build, `dist/${rel}`, entry.digest).toString("utf8");
+				const href = `/candidate/dist/${rel}`;
+				cssText[href] = packageBytes(build, `dist/${rel}`, entry.digest).toString("utf8");
+				cssResources[href] = (stylesheets.get(rel)?.resources ?? []).map((p) => `/candidate/${p}`);
 			}
 			// The field the worker re-renders with a value of its own: the first
 			// declared text field (a component without one has nothing to show).
@@ -662,11 +689,13 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				moduleUrl: "/candidate/dist/index.js",
 				cssUrls: decl.styles.map((s) => `/candidate/dist/${s}`),
 				cssText,
+				cssResources,
 				puckType: decl.puckType,
 				fieldNames,
 				defaultProps,
 				expectedTexts,
 				nonceField,
+				interaction: profiles.validator.interaction ?? null,
 				timeoutMs: Math.max(5_000, limits.hostCheckTimeoutMs - 10_000),
 			};
 			const dir = stepDir("browser");
@@ -750,6 +779,24 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					"CANDIDATE_TEST_FAILED",
 					`the host's React did not render the observer's ${session.nonceField} through Puck's Render`,
 				);
+			// The defined interaction outcome (fixed fixture): a real click must
+			// advance the counter attribute by the required amount. An empty
+			// onClick or a missing state transition leaves it unchanged and fails
+			// here; this is required only when the profile names a counter
+			// attribute, so it never demands that every component's click change
+			// the DOM.
+			if (session.interaction) {
+				const i = observed.interaction;
+				if (i.buttons === 0)
+					throw new CheckFailure("CANDIDATE_TEST_FAILED", "the component rendered no interactive button to test");
+				if (!i.clicked)
+					throw new CheckFailure("CANDIDATE_TEST_FAILED", "the component's button did not accept a real click");
+				if (!i.transitioned)
+					throw new CheckFailure(
+						"CANDIDATE_TEST_FAILED",
+						`the click did not advance ${session.interaction.counterAttribute} from ${i.before ?? "?"} by ${session.interaction.increment} (saw ${i.after ?? "?"})`,
+					);
+			}
 			if (observed.undeclaredStylesheets.length)
 				throw new CheckFailure(
 					"MISSING_CSS",
@@ -762,6 +809,16 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					throw new CheckFailure("MISSING_CSS", `${sheet.href} in the document differs from the shipped stylesheet`);
 				if (sheet.matchedRules === 0)
 					throw new CheckFailure("MISSING_CSS", `no rule of ${sheet.href} applies to the rendered component`);
+				// A loaded, selector-matching stylesheet is not enough: at least
+				// one of its matched rules must actually take effect in the
+				// browser's computed style. Disabling the stylesheet drops every
+				// computed value back to the default, so nothing is in force and
+				// this fails — a downloaded file and a matching selector on their
+				// own never establish that a style applied.
+				if (sheet.effectiveRules === 0)
+					throw new CheckFailure("MISSING_CSS", `no rule of ${sheet.href} takes effect on the rendered component`);
+				if (sheet.disabled)
+					throw new CheckFailure("MISSING_CSS", `${sheet.href} is disabled in the document and takes no effect`);
 				for (const imp of sheet.imports)
 					if (!imp.loaded || !allowed.has(imp.href))
 						throw new CheckFailure("MISSING_CSS", `${sheet.href} imports ${imp.href}, which did not load as declared`);

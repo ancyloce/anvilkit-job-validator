@@ -42,24 +42,32 @@ export interface BrowserSession {
 	cssUrls: string[];
 	/** The shipped stylesheet bytes by URL, for the CSSOM comparison in the isolated world. */
 	cssText: Record<string, string>;
+	/** The resources each stylesheet references (parsed by the validator), by URL; the isolated world only confirms each loads. */
+	cssResources: Record<string, string[]>;
 	puckType: string;
 	fieldNames: string[];
 	defaultProps: Record<string, unknown>;
 	expectedTexts: string[];
 	/** A text field to re-render with a value of the worker's choosing (null when the component declares none). */
 	nonceField: string | null;
+	/** The fixed-fixture interaction contract: a click must advance this DOM attribute by `increment` (null: none required). */
+	interaction: { counterAttribute: string; increment: number } | null;
 	timeoutMs: number;
 }
 
 /** One stylesheet as the isolated world found it in the document. */
 export interface ObservedStylesheet {
 	href: string;
+	/** Whether the sheet is disabled in the document (a disabled sheet loads but never takes effect). */
+	disabled: boolean;
 	rules: number;
 	matchedRules: number;
+	/** Matched rules whose declared values the element's computed style actually shows (the sheet in force). */
+	effectiveRules: number;
 	/** The loaded rules (imports aside) serialize as the shipped bytes do when parsed by this browser. */
 	sameAsShipped: boolean;
 	imports: Array<{ href: string; loaded: boolean }>;
-	/** url() references of the rules that match the rendered tree, and whether each loaded and decoded. */
+	/** The resources the validator parsed from the stylesheet, and whether each loaded in the browser. */
 	resources: Array<{ url: string; loaded: boolean }>;
 }
 
@@ -73,7 +81,21 @@ export interface BrowserObservation {
 	undeclaredStylesheets: string[];
 	/** The re-render with the worker's value through the captured control: which field, and whether the DOM showed it. */
 	nonce: { field: string | null; rendered: boolean };
-	interaction: { buttons: number; clicked: boolean; changed: boolean };
+	/**
+	 * The real click and its outcome: how many buttons, whether the click landed,
+	 * and — when the profile names a counter attribute — whether that attribute
+	 * advanced by the required amount (its before/after values), the defined
+	 * click-count transition of the fixed Hero.
+	 */
+	interaction: {
+		buttons: number;
+		clicked: boolean;
+		changed: boolean;
+		counterAttribute: string | null;
+		before: string | null;
+		after: string | null;
+		transitioned: boolean;
+	};
 	pageErrors: string[];
 }
 
@@ -119,6 +141,7 @@ function safeJoin(root: string, rel: string): string | undefined {
 interface ObserveArgs {
 	cssUrls: string[];
 	cssText: Record<string, string>;
+	cssResources: Record<string, string[]>;
 	expectedTexts: string[];
 }
 
@@ -257,6 +280,7 @@ async function main(): Promise<void> {
 		const observeArgs: ObserveArgs = {
 			cssUrls: session.cssUrls,
 			cssText: session.cssText,
+			cssResources: session.cssResources,
 			expectedTexts: session.expectedTexts,
 		};
 		const observed = (await cdp.send("Runtime.callFunctionOn", {
@@ -288,20 +312,55 @@ async function main(): Promise<void> {
 			}
 		}
 
-		// Interaction: real input through the browser, the DOM compared before and after.
-		const buttons = page.locator("#root button");
+		// Interaction: real input through the browser. When the profile names a
+		// counter attribute (the fixed Hero's `data-clicks`), the worker verifies
+		// the defined click-count transition — the attribute advancing by the
+		// required amount — by waiting through Playwright's own locator for the
+		// element that carries the incremented value, never a fixed sleep and
+		// never the page's main world. An empty onClick, or one that does not
+		// make the transition, leaves the attribute unchanged and the wait times
+		// out. Without a counter attribute nothing about the click is required,
+		// so this is not a rule that every component's click must change the DOM.
+		const spec = session.interaction;
+		const selector = spec ? `#root button[${spec.counterAttribute}]` : "#root button";
+		const buttons = page.locator(selector);
 		const interaction: BrowserObservation["interaction"] = {
 			buttons: await buttons.count(),
 			clicked: false,
 			changed: false,
+			counterAttribute: spec?.counterAttribute ?? null,
+			before: null,
+			after: null,
+			transitioned: false,
 		};
 		if (interaction.buttons > 0) {
-			const before = await rootLocator.innerHTML();
+			const target = buttons.first();
+			const beforeHtml = await rootLocator.innerHTML();
+			if (spec) interaction.before = await target.getAttribute(spec.counterAttribute);
 			try {
-				await buttons.first().click({ timeout: 10_000 });
+				await target.click({ timeout: 10_000 });
 				interaction.clicked = true;
-				await page.waitForTimeout(100);
-				interaction.changed = (await rootLocator.innerHTML()) !== before;
+				if (spec) {
+					const from = Number(interaction.before);
+					const want = Number.isFinite(from) ? String(from + spec.increment) : null;
+					if (want !== null) {
+						// Wait through Playwright for the button to carry the advanced
+						// value; the attribute read is Playwright's (the utility world),
+						// not anything the page's main world reported.
+						try {
+							await page
+								.locator(`#root button[${spec.counterAttribute}="${want}"]`)
+								.first()
+								.waitFor({ state: "attached", timeout: 10_000 });
+						} catch {
+							// the transition did not happen within the bound
+						}
+					}
+					interaction.after = await target.getAttribute(spec.counterAttribute);
+					interaction.transitioned = want !== null && interaction.after === want;
+				}
+				// Recorded as data beside the outcome; the verdict is the transition.
+				interaction.changed = (await rootLocator.innerHTML()) !== beforeHtml;
 			} catch {
 				interaction.clicked = false;
 			}
