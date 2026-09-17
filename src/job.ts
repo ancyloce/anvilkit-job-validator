@@ -21,6 +21,7 @@ import { parse as parseYaml } from "yaml";
 import { BuildError, type BuildOutput, buildComponent } from "./build.js";
 import { jobsSchemaId, parseStrictObject, validateAgainst } from "./contracts.js";
 import { sha256 } from "./digest.js";
+import { InputError, unpackSourceArchive } from "./input.js";
 import type { StepIdentity } from "./isolation.js";
 import { loadProfiles, ProfileError, type Profiles, packageRoot, verifyToolchain } from "./profiles.js";
 import { readSource, SourceError, type SourceRead } from "./source.js";
@@ -233,6 +234,54 @@ class Sidecar {
 		}
 	}
 
+	/** Asks the sidecar to load a handle-bound input through Control and stage it (P13-04). */
+	loadInput(name: string): Promise<{ name: string; class: string; digest: string; sizeBytes: number }> {
+		return this.request("POST", `/v1/inputs/${name}/loads`, {});
+	}
+
+	/** Reads the staged bytes of an input from the trusted socket. */
+	readInput(name: string, maxBytes: number): Promise<Buffer> {
+		return new Promise((resolve, reject) => {
+			const req = http.request(
+				{
+					socketPath: this.socket,
+					method: "GET",
+					path: `/v1/inputs/${name}`,
+					headers: { connection: "close" },
+					timeout: this.timeoutMs,
+				},
+				(res) => {
+					const chunks: Buffer[] = [];
+					let size = 0;
+					res.on("data", (c: Buffer) => {
+						size += c.length;
+						if (size <= maxBytes + 1) chunks.push(c);
+					});
+					res.on("end", () => {
+						if ((res.statusCode ?? 0) !== 200) {
+							let code = "";
+							try {
+								code = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { code?: string }).code ?? "";
+							} catch {
+								// no body
+							}
+							reject(new SidecarError(res.statusCode ?? 0, code, ""));
+							return;
+						}
+						if (size > maxBytes) {
+							reject(new Error(`input ${name} exceeds ${maxBytes} bytes`));
+							return;
+						}
+						resolve(Buffer.concat(chunks));
+					});
+				},
+			);
+			req.on("timeout", () => req.destroy(new Error(`sidecar GET /v1/inputs/${name}: timeout`)));
+			req.on("error", (err) => reject(new Error(`sidecar GET /v1/inputs/${name}: ${err.message}`)));
+			req.end();
+		});
+	}
+
 	upload(cls: string, mediaType: string, body: Buffer): Promise<Transfer> {
 		return this.request<Transfer>(
 			"POST",
@@ -271,10 +320,11 @@ async function runChain(
 	toolchain: Record<string, string>,
 	identity: StepIdentity,
 	workDir: string,
+	sourceDir: string,
 ): Promise<Outcome> {
 	let source: SourceRead;
 	try {
-		source = readSource(cfg.paths.fixed_source, {
+		source = readSource(sourceDir, {
 			sourceRevision: cfg.source_revision,
 			profile: profiles.build,
 			limits: profiles.validator.limits,
@@ -299,6 +349,24 @@ async function runChain(
 	}
 	const certification = await certify({ source, build, profiles, toolchain, identity, hostChecks: cfg.host_checks });
 	return { verdict: certification.verdict, failureCode: certification.failureCode, certification, source, build };
+}
+
+/** The result manifest of the jobs contract for a verdict with the given outputs. */
+function resultManifest(env: Envelope, verdict: string, failureCode: string, outputs: unknown[]): Buffer {
+	const manifest: Record<string, unknown> = {
+		schemaVersion: 1,
+		launchId: env.launchId,
+		attemptId: env.attemptId,
+		jobKind: env.jobKind,
+		profileId: env.profileId,
+		verdict,
+		outputs,
+		completedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+	};
+	if (failureCode) manifest.failureCode = failureCode;
+	const shape = validateAgainst(`${jobsSchemaId}#/$defs/resultManifest`, manifest);
+	if (shape) throw new Error(`result manifest does not satisfy the contract: ${shape}`);
+	return Buffer.from(JSON.stringify(manifest));
 }
 
 export async function main(): Promise<number> {
@@ -385,7 +453,45 @@ export async function main(): Promise<number> {
 				: { mode: "caller" };
 		summary.stepIdentity = identity.mode;
 
-		const outcome = await runChain(cfg, profiles, toolchain, identity, workDir);
+		// The source: the archive the envelope binds by handle (loaded by
+		// the sidecar from Control's accepted stage, verified against the
+		// envelope's digest, unpacked under the source rules) or, for the
+		// fixed development profile, the reviewed component of the image.
+		let sourceDir = cfg.paths.fixed_source;
+		const sourceInput = env.inputs.find((i) => i.name === "source" && i.handle);
+		if (sourceInput) {
+			const loaded = await sidecar.loadInput("source");
+			const archive = await sidecar.readInput("source", profiles.validator.limits.maxSourceBytes * 2 + 1_048_576);
+			if (sha256(archive) !== sourceInput.digest || loaded.digest !== sourceInput.digest)
+				throw new Error(
+					`the loaded source hashes to ${sha256(archive)} (sidecar: ${loaded.digest}), the envelope binds ${sourceInput.digest}`,
+				);
+			sourceDir = path.join(cfg.paths.workspace, "input-source");
+			rmSync(sourceDir, { recursive: true, force: true });
+			try {
+				const files = await unpackSourceArchive(archive, sourceDir, profiles.validator.limits);
+				log(`source input unpacked: ${files.length} files`);
+			} catch (err) {
+				if (err instanceof InputError) {
+					summary.verdict = "invalid";
+					summary.failureCode = "PATH_ESCAPE";
+					summary.detail = err.message.slice(0, 300);
+					writeFileSync(
+						path.join(cfg.paths.verdict, "verdict.json"),
+						`${JSON.stringify({ verdict: "invalid", failureCode: "PATH_ESCAPE" })}\n`,
+						{ mode: 0o600 },
+					);
+					const manifest = resultManifest(env, "invalid", "PATH_ESCAPE", []);
+					const stage = await sidecar.submit("invalid", "PATH_ESCAPE", cfg.observer.identity, manifest);
+					summary.outcome = "completed";
+					summary.stageId = stage.stageId;
+					log(`source input refused: ${err.message}; result accepted as stage ${stage.stageId}`);
+					return 0;
+				}
+				throw err;
+			}
+		}
+		const outcome = await runChain(cfg, profiles, toolchain, identity, workDir, sourceDir);
 		summary.verdict = outcome.verdict;
 		summary.failureCode = outcome.failureCode;
 		if (outcome.certification) summary.complete = outcome.certification.complete;
@@ -457,20 +563,7 @@ export async function main(): Promise<number> {
 		summary.evidenceDigest = outcome.certification?.evidenceDigest ?? sha256(evidenceBytes);
 		record(await sidecar.upload("evidence", "application/json", evidenceBytes));
 		summary.handles = handles;
-		const manifest: Record<string, unknown> = {
-			schemaVersion: 1,
-			launchId: env.launchId,
-			attemptId: env.attemptId,
-			jobKind: env.jobKind,
-			profileId: env.profileId,
-			verdict: outcome.verdict,
-			outputs,
-			completedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-		};
-		if (outcome.failureCode) manifest.failureCode = outcome.failureCode;
-		const shape = validateAgainst(`${jobsSchemaId}#/$defs/resultManifest`, manifest);
-		if (shape) throw new Error(`result manifest does not satisfy the contract: ${shape}`);
-		const manifestBytes = Buffer.from(JSON.stringify(manifest));
+		const manifestBytes = resultManifest(env, outcome.verdict, outcome.failureCode ?? "", outputs);
 		writeFileSync(path.join(cfg.paths.verdict, "manifest.json"), manifestBytes, { mode: 0o600 });
 		const stage = await sidecar.submit(
 			outcome.verdict,
