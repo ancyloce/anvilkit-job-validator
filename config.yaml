@@ -1,0 +1,27 @@
+# anvilkit-validator Job configuration (reviewed, secret-free; baked into the
+# image at /etc/anvilkit/anvilkit-validator/config.yaml, root-owned and
+# unreadable by the candidate UID). Precedence is defaults < this file; the
+# launch facts come only from the Job template's environment
+# (ANVILKIT_LAUNCH_ID, ANVILKIT_ATTEMPT_ID, ANVILKIT_LAUNCH_ENVELOPE) and are
+# refused inside this file.
+paths:
+  workspace: /workspace              # emptyDir; the chain works under /workspace/w
+  verdict: /anvilkit/verdict         # emptyDir; chmod 0700 by this process before anything runs
+  sockets: /run/anvilkit/sockets     # the sidecar's directory (read-only mount here)
+  termination_log: /dev/termination-log
+  fixed_source: /anvilkit/validator/fixtures/component/hero   # the reviewed fixed component (root 0700)
+candidate:
+  identity: setpriv                  # the build/SSR/browser steps run as this identity through setpriv
+  uid: 10001
+  gid: 10001
+sidecar:
+  uid: 10002
+  wait_ms: 60000
+  request_timeout_ms: 60000
+observer:
+  identity: anvilkit-validator-supervisor
+host_checks:                         # both mandatory under validator-dev-v1: the Job refuses a configuration that disables one
+  ssr: true
+  browser: true                      # Playwright's pinned Chromium headless shell is baked into the image (PLAYWRIGHT_BROWSERS_PATH)
+source_revision: "1"
+validator_profile: validator-dev-v1

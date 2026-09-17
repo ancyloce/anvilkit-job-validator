@@ -1,0 +1,7 @@
+node_modules
+dist
+fixtures/host/browser/dist
+test
+.git
+*.md
+!README.md

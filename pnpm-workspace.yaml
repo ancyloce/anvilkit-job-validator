@@ -1,0 +1,15 @@
+# This directory is its own pnpm workspace root (one package), independent of
+# the parent's workspace globs, as contracts/ is: the lockfile here pins the
+# trusted validator's toolchain (Rollup, TypeScript, the host's React/Puck,
+# Playwright) that profiles/ records. Candidate dependencies are never
+# installed from a candidate lockfile; the build resolves only what the
+# build-support profile allows, from this locked install.
+packages: []
+# No lifecycle script runs in this install (DD-04 §1: a lockfile does not
+# establish lifecycle-script safety, and this is the trusted side). esbuild's
+# postinstall only fetches a platform binary when its optional platform
+# package is absent; the locked optional package is present, so it is denied.
+allowBuilds:
+  esbuild: false
+minimumReleaseAgeExclude:
+  - '@types/node@24.13.5'

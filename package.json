@@ -1,0 +1,51 @@
+{
+  "name": "@anvilkit/job-validator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trusted validator Job of the component workflow (DD-04, delivery.md P10): the complete-source contract, the protected Rollup build profile, the independent observer with its bounded React/Puck host fixture, and the Job entrypoint that submits verified artifacts through the access sidecar. Candidate code is data here; the trusted process never imports it.",
+  "type": "module",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check-types": "tsc --noEmit -p tsconfig.json",
+    "lint": "biome check src test fixtures/host",
+    "test": "vitest run",
+    "profiles:check": "tsx src/profiles.ts --check",
+    "certify": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@puckeditor/core": "0.23.0",
+    "@rollup/plugin-commonjs": "29.0.3",
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@rollup/plugin-replace": "6.0.3",
+    "@rollup/plugin-typescript": "12.3.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "css-tree": "3.2.1",
+    "es-module-lexer": "3.0.2",
+    "playwright": "1.62.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "rollup": "4.63.3",
+    "semver": "7.8.5",
+    "tar": "7.5.22",
+    "tslib": "2.8.1",
+    "typescript": "5.9.3",
+    "validate-npm-package-name": "8.0.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@types/css-tree": "3.2.0",
+    "@types/node": "24.13.5",
+    "@types/semver": "7.8.0",
+    "@types/validate-npm-package-name": "4.0.2",
+    "tsx": "4.23.13",
+    "vitest": "5.0.1"
+  }
+}
