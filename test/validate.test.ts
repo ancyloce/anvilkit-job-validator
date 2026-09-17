@@ -129,10 +129,20 @@ describe("independent certification of the fixed component", () => {
 		expect(observed.stylesheets).toHaveLength(1);
 		expect(observed.stylesheets[0]?.href).toBe("/candidate/dist/styles/hero.css");
 		expect(observed.stylesheets[0]?.sameAsShipped).toBe(true);
+		expect(observed.stylesheets[0]?.disabled).toBe(false);
 		expect(observed.stylesheets[0]?.matchedRules).toBeGreaterThan(0);
+		expect(observed.stylesheets[0]?.effectiveRules).toBeGreaterThan(0);
 		expect(observed.stylesheets[0]?.resources).toEqual([{ url: "/candidate/dist/assets/mark.svg", loaded: true }]);
 		expect(observed.nonce).toEqual({ field: "title", rendered: true });
-		expect(observed.interaction).toEqual({ buttons: 1, clicked: true, changed: true });
+		expect(observed.interaction).toEqual({
+			buttons: 1,
+			clicked: true,
+			changed: true,
+			counterAttribute: "data-clicks",
+			before: "0",
+			after: "1",
+			transitioned: true,
+		});
 		expect(observed.pageErrors).toEqual([]);
 		const scripts = browser.pageRequests.filter((r) => r.resourceType === "script").map((r) => new URL(r.url).pathname);
 		expect(scripts.filter((p) => !p.startsWith("/host/"))).toEqual(["/candidate/dist/index.js"]);
@@ -301,6 +311,40 @@ describe("independent certification of the fixed component", () => {
 		expect(cert.steps.ssr).toBeUndefined();
 	});
 
+	it("rejects a candidate that forges an SSR success report without rendering", async () => {
+		// Through the real source-read, build and certification path: a candidate
+		// that, when imported by the SSR render child, prints a fully successful
+		// report and exits before rendering. It cannot know the harness's per-run
+		// nonce, so its forged line is ignored and the trusted harness — which
+		// never imports the candidate and writes the report itself — records no
+		// completed render. Candidate-written reports cannot establish SSR success.
+		const f = path.join(build.packageDir, "dist", "index.js");
+		const original = readFileSync(f, "utf8");
+		const forge = [
+			'if (typeof window === "undefined" && typeof process !== "undefined") {',
+			'  const texts = ["Build once, certify exactly", "A reviewed fixed component: complete source, protected build, independent verdict.", "Get started"];',
+			'  const html = "<section>" + texts.map((t) => "<p>" + t + "</p>").join("") + "</section>";',
+			'  const forged = { ok: true, exports: ["Hero", "config", "default"], fields: ["align", "ctaLabel", "subtitle", "title"], defaultProps: {}, directHtml: html, puckHtml: html, reactVersion: "19.3.0" };',
+			'  process.stdout.write("\\n@@ANVILKIT_SSR_RESULT@@guessed-nonce " + JSON.stringify(forged) + "\\n");',
+			"  process.exit(0);",
+			"}",
+			"",
+		].join("\n");
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), `${original}\n${forge}`));
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: false },
+		});
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
+		const ssr = cert.host.ssr as { ok?: boolean; errors?: string[] };
+		expect(ssr.ok).toBe(false);
+		expect((ssr.errors ?? []).join(" ")).toMatch(/no trusted result/);
+	});
+
 	it("treats a forged exit 0 as no evidence", async () => {
 		const noReport = await certify({
 			source,
@@ -466,6 +510,18 @@ export default config;
 			resources: ["dist/assets/a b.svg", "dist/assets/mark.svg"],
 			selectors: [".a", ".b::before"],
 		});
+		// References the older code missed: url() inside a custom property and a
+		// var() fallback, and a string URL in image-set() (its url() entries were
+		// already caught). All are resolved and reviewed like any other resource.
+		expect(
+			refs(
+				':root { --m: url("../assets/mark.svg"); } .a { background: image-set("../assets/a%20b.svg" 1x, url(../assets/mark.svg) 2x); } .b { background: var(--x, url(../assets/mark.svg)); }',
+			),
+		).toEqual({
+			imports: [],
+			resources: ["dist/assets/a b.svg", "dist/assets/mark.svg"],
+			selectors: [":root", ".a", ".b"],
+		});
 		const refused: Array<[string, RegExp]> = [
 			[
 				'@import "https://cdn.example/reset.css";',
@@ -483,6 +539,11 @@ export default config;
 			[".x { color: red; } }", /does not parse as CSS/],
 			['@font-face { src: url(../assets/font.woff2) format("woff2"); }', /which the package does not ship/],
 			['.x { background: image-set(url("../assets/none.png") 1x); }', /which the package does not ship/],
+			['.x { background: image-set("https://cdn.example/a.png" 1x); }', /only shipped relative resources/],
+			['.x { background: image-set("../assets/none.png" 1x); }', /which the package does not ship/],
+			[':root { --m: url("https://cdn.example/a.png"); }', /only shipped relative resources/],
+			[':root { --m: url("../../../escape.svg"); }', /escapes the package/],
+			['.x { background: var(--y, url("../assets/none.svg")); }', /which the package does not ship/],
 		];
 		for (const [text, expected] of refused) expect(() => refs(text), text).toThrow(expected);
 		// End to end: a remote @import in the source fails the static check; no host runs.
@@ -507,6 +568,65 @@ export default config;
 		} finally {
 			dir.dispose();
 		}
+	});
+
+	it("fails a candidate whose click does not make the defined state transition (empty onClick)", async () => {
+		// The Hero's button advances data-clicks on each click. A candidate whose
+		// handler does not increment the state leaves data-clicks at 0: the click
+		// still lands, but the defined transition never happens, so recording
+		// clicked/changed is not enough — the outcome must be checked.
+		const f = path.join(build.packageDir, "dist", "index.js");
+		const original = readFileSync(f, "utf8");
+		expect(original).toContain("setClicks(clicks + 1)");
+		const b = await mutated((pkg) =>
+			writeFileSync(path.join(pkg, "dist", "index.js"), original.replace("setClicks(clicks + 1)", "setClicks(clicks)")),
+		);
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: false, browser: true },
+		});
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "browser-host");
+		expect(cert.checks.find((c) => c.name === "browser-host")?.detail).toMatch(/did not advance data-clicks/);
+		const observed = (cert.host.browser as BrowserWorkerResult).observed as BrowserObservation;
+		expect(observed.interaction.clicked).toBe(true);
+		expect(observed.interaction.before).toBe("0");
+		expect(observed.interaction.after).toBe("0");
+		expect(observed.interaction.transitioned).toBe(false);
+	});
+
+	it("fails when the declared stylesheets take no effect even though they load and match", async () => {
+		// The module renders the fixed Hero correctly (texts, props, interaction),
+		// but at import it takes every declared stylesheet out of force (media set
+		// to "not all"): the files are still downloaded, still in the document and
+		// still selector-matching, yet the computed style reflects none of them. A
+		// downloaded file and a matching selector are not enough — the style must
+		// actually be in force — so certification must fail on css.
+		const b = await mutated((pkg) => {
+			const file = path.join(pkg, "dist", "index.js");
+			const disable =
+				'if (typeof document !== "undefined") { for (const s of Array.from(document.styleSheets)) { try { s.disabled = true; } catch {} } }';
+			writeFileSync(file, `${readFileSync(file, "utf8")}\n${disable}\n`);
+		});
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: false, browser: true },
+		});
+		fails(cert, "MISSING_CSS", "repairable", "browser-host");
+		expect(cert.checks.find((c) => c.name === "browser-host")?.detail).toMatch(/takes effect/);
+		const observed = (cert.host.browser as BrowserWorkerResult).observed as BrowserObservation;
+		// The sheet is still in the document and its selectors still match, but
+		// the computed style shows no rule of it took effect — the css check
+		// fails on that, not on a downloaded file or a matching selector.
+		expect(observed.stylesheets[0]?.matchedRules).toBeGreaterThan(0);
+		expect(observed.stylesheets[0]?.effectiveRules).toBe(0);
 	});
 
 	it("maps failure codes to verdicts so that infrastructure failures are never repair targets", () => {

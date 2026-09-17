@@ -49,6 +49,46 @@ describe("step stop and confirmation as the caller", () => {
 		expect(stepProcesses(scanProcesses(), { root: process.pid, leader: pids.leader })).toEqual([]);
 	});
 
+	it("returns within a bound as unobserved when the stop cannot be established and the leader stays alive", async () => {
+		// A step that hangs past its bound, with a stop that never establishes
+		// the kill (the setpriv helper failing in the Job): the leader is still
+		// alive when settle runs, so the pre-fix `await exited` would hang here.
+		// runStep must instead resolve within a defined bound with the stop
+		// unconfirmed, so the caller treats the step as OBSERVER_FAILED and
+		// reads nothing it left; the Job's own cleanup reclaims the survivor.
+		const d = dir("anvilkit-stop-");
+		const pidFile = path.join(d, "pids.json");
+		writeFileSync(path.join(d, "step.mjs"), stepScript("hang", pidFile));
+		const started = Date.now();
+		const out = await runStep([process.execPath, path.join(d, "step.mjs")], {
+			cwd: d,
+			timeoutMs: 1_000,
+			identity: callerIdentity(),
+			stop: () => Promise.reject(new Error("the stop helper did not return")),
+		});
+		const elapsed = Date.now() - started;
+		try {
+			expect(out.stop.confirmed).toBe(false);
+			expect(out.stop.reason).toBe("timeout");
+			expect(out.stop.error).toMatch(/stop not established: the stop helper did not return/);
+			expect(out.timedOut).toBe(true);
+			// The leader never exited, so no exit status was collected, and the
+			// whole call stayed well within its bound rather than hanging.
+			expect(out.code).toBeNull();
+			expect(elapsed).toBeLessThan(60_000);
+		} finally {
+			// The injected stop did nothing; clean up the survivors this test left.
+			const pids = JSON.parse(readFileSync(pidFile, "utf8")) as { leader: number; child: number };
+			for (const pid of [pids.child, pids.leader]) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {
+					// already gone
+				}
+			}
+		}
+	});
+
 	it("stops a step at its bound with its child and confirms it", async () => {
 		const d = dir("anvilkit-stop-");
 		const pidFile = path.join(d, "pids.json");
