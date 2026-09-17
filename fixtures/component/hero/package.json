@@ -1,0 +1,10 @@
+{
+  "name": "@anvilkit/hero-fixed",
+  "version": "1.0.0",
+  "description": "Reviewed fixed Hero component of the P10 certification chain (DEVELOPMENT fixture).",
+  "license": "MIT",
+  "dependencies": {
+    "@puckeditor/core": "0.23.0",
+    "react": "19.3.0"
+  }
+}

@@ -1,0 +1,41 @@
+/* Hero (fixed component). Plain CSS, no preprocessor, no dynamic classes. */
+.ak-hero {
+	box-sizing: border-box;
+	padding: 24px;
+	border-left: 4px solid rgb(17, 24, 39);
+	font-family: system-ui, sans-serif;
+	color: rgb(17, 24, 39);
+	background: rgb(248, 250, 252);
+}
+.ak-hero--center {
+	text-align: center;
+	border-left-width: 0;
+	border-top: 4px solid rgb(17, 24, 39);
+}
+.ak-hero__mark {
+	display: inline-block;
+	width: 32px;
+	height: 32px;
+	background-image: url("../assets/mark.svg");
+	background-size: contain;
+	background-repeat: no-repeat;
+}
+.ak-hero__title {
+	margin: 8px 0 4px;
+	font-size: 28px;
+	line-height: 1.2;
+}
+.ak-hero__subtitle {
+	margin: 0 0 16px;
+	font-size: 16px;
+	line-height: 1.5;
+}
+.ak-hero__cta {
+	padding: 8px 16px;
+	border: 0;
+	border-radius: 4px;
+	background: rgb(37, 99, 235);
+	color: rgb(255, 255, 255);
+	font: inherit;
+	cursor: pointer;
+}

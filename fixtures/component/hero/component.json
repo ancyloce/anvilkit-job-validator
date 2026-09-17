@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "componentId": "cmp_hero_fixed",
+  "puckType": "Hero",
+  "entry": "src/index.tsx",
+  "styles": ["styles/hero.css"],
+  "resources": ["assets/mark.svg"],
+  "usage": "README.md",
+  "editableFields": [
+    { "name": "title", "type": "text", "default": "Build once, certify exactly" },
+    { "name": "subtitle", "type": "textarea", "default": "A reviewed fixed component: complete source, protected build, independent verdict." },
+    { "name": "align", "type": "radio", "default": "left" },
+    { "name": "ctaLabel", "type": "text", "default": "Get started" }
+  ]
+}
