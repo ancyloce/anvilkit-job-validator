@@ -204,6 +204,13 @@ export function stylesheetReferences(
 		onParseError: (err) => errors.push(`${err.message} (line ${err.line ?? "?"})`),
 	});
 	if (errors.length) fail(`${rel} does not parse as CSS: ${errors[0]}`);
+	// css-tree decodes CSS escapes inside String and Url values, but leaves
+	// at-rule and function names as written (`\69 mport`, `image\2d set`,
+	// `u\72 l`). Normalise those identifiers with the library's own decoder so an
+	// escaped `@import`, `image-set()`, `src()` or a `url()` parsed as a Function
+	// follows the same reference rules as its plain form — a browser honours the
+	// escapes, so the static review must too.
+	const identName = (raw: string): string => csstree.ident.decode(raw).toLowerCase();
 	const resolve = (ref: string, what: string): string => {
 		if (ref.includes("\0") || /^\s*$/.test(ref)) fail(`${rel}: ${what} reference is empty or unreviewable`);
 		if (/^(data:|blob:|javascript:|[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref))
@@ -231,7 +238,7 @@ export function stylesheetReferences(
 		enter(node: csstree.CssNode) {
 			switch (node.type) {
 				case "Atrule": {
-					const name = node.name.toLowerCase();
+					const name = identName(node.name);
 					if (name === "import") {
 						const first = node.prelude?.type === "AtrulePrelude" ? node.prelude.children.first : null;
 						if (!first || (first.type !== "String" && first.type !== "Url"))
@@ -247,11 +254,14 @@ export function stylesheetReferences(
 					resources.add(resolve(node.value, "url()"));
 					return;
 				case "Function": {
-					const fname = node.name.toLowerCase();
-					if (fname === "src") {
+					const fname = identName(node.name);
+					if (fname === "url" || fname === "src") {
 						const first = node.children.first;
-						if (first?.type !== "String") return fail(`${rel}: src() without a reviewable target`);
-						resources.add(resolve(first.value, "src()"));
+						// A url() or src() parsed as a Function (an escaped name, e.g.
+						// `u\72 l("…")`): its single string/url argument is the reference.
+						if (first?.type !== "String" && first?.type !== "Url")
+							return fail(`${rel}: ${fname}() without a reviewable target`);
+						resources.add(resolve(first.value, `${fname}()`));
 					} else if (fname === "image-set" || fname === "-webkit-image-set") {
 						// Bare string entries of image-set() are resource references too;
 						// its url() entries are caught by the Url case below.
