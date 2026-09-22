@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>anvilkit validator host</title>
+<!-- Protected host fixture (DD-04 §3, DD-05 §3): one React, one ReactDOM and
+     one Puck instance served by this page through its import map; the
+     component under test imports them by bare specifier. The page never
+     inlines the candidate module; host.js loads it by URL after the
+     stylesheets are ready. -->
+<script type="importmap">
+{
+  "imports": {
+    "react": "/host/react.js",
+    "react/jsx-runtime": "/host/react-jsx-runtime.js",
+    "react-dom": "/host/react-dom.js",
+    "react-dom/client": "/host/react-dom-client.js",
+    "@puckeditor/core": "/host/puck.js"
+  }
+}
+</script>
+<script>
+  // Renderer registrations are counted before any React code runs: a
+  // second ReactDOM instance would register twice.
+  window.__anvilkitRenderers = [];
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    isDisabled: false,
+    supportsFiber: true,
+    renderers: new Map(),
+    inject(renderer) { window.__anvilkitRenderers.push(renderer.version || "unknown"); return window.__anvilkitRenderers.length; },
+    on() {}, off() {}, emit() {}, sub() { return () => {}; },
+    checkDCE() {},
+    onCommitFiberRoot() {}, onCommitFiberUnmount() {}, onPostCommitFiberRoot() {}
+  };
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/host/host.js"></script>
+</body>
+</html>
