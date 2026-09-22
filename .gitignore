@@ -40,4 +40,4 @@ next-env.d.ts
 # host fixtures), only the generated host bundles under browser/dist are ignored
 /dist
 /.local
-/fixtures/host/
+/fixtures/host/browser/dist
