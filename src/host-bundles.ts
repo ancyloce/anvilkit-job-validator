@@ -104,14 +104,19 @@ async function bundleExternal(specifier: string, externals: string[], outFile: s
 }
 
 async function bundleHost(externals: string[], outFile: string): Promise<void> {
+	await bundleScript(path.join(hostFixtureDir, "host.tsx"), externals, outFile);
+}
+
+/** Compiles one protected host-side script with the Host ABI's externals left as bare specifiers. */
+export async function bundleScript(input: string, externals: string[], outFile: string): Promise<void> {
 	const bundle = await rollup({
-		input: path.join(hostFixtureDir, "host.tsx"),
+		input,
 		external: (id) => externals.includes(id),
 		onwarn: () => {},
 		plugins: [
 			typescript({
 				tsconfig: false,
-				include: [`${hostFixtureDir}/host.tsx`],
+				include: [input],
 				noEmitOnError: true,
 				compilerOptions: {
 					target: "es2022",
