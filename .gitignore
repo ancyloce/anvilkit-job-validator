@@ -41,3 +41,4 @@ next-env.d.ts
 /dist
 /.local
 /fixtures/host/browser/dist
+/fixtures/preview/dist
