@@ -11,9 +11,12 @@ paths:
   termination_log: /dev/termination-log
   fixed_source: /anvilkit/validator/fixtures/component/hero   # the reviewed fixed component (root 0700)
 candidate:
-  identity: setpriv                  # the build/SSR/browser steps run as this identity through setpriv
+  identity: setpriv                  # the build, SSR render and browser steps run as this identity through setpriv
   uid: 10001
   gid: 10001
+harness:                             # the protected SSR harness judges the render under its own UID (never the candidate's or the sidecar's)
+  uid: 10003
+  gid: 10003
 sidecar:
   uid: 10002
   wait_ms: 60000
@@ -23,5 +26,5 @@ observer:
 host_checks:                         # both mandatory under validator-dev-v1: the Job refuses a configuration that disables one
   ssr: true
   browser: true                      # Playwright's pinned Chromium headless shell is baked into the image (PLAYWRIGHT_BROWSERS_PATH)
-source_revision: "1"
+source_revision: "1"                 # the fixed component's reviewed revision, used only when the launch names no allocated identity; a bound source is certified at the launch's component.sourceRevision
 validator_profile: validator-dev-v1
