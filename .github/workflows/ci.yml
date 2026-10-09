@@ -1,0 +1,63 @@
+# Independent verification of anvilkit-job-validator from this repository
+# alone (VAL-08): the locked install (no lifecycle scripts), type check,
+# Biome, the profile digests against the locked toolchain and the protected
+# fixtures, the build, and the tests with Playwright's Chromium headless
+# shell. The tests run as root under ANVILKIT_REQUIRE_ROOT_TESTS=1: the ones
+# that run the steps under their real UIDs (setpriv, the UID-based stop and
+# its confirmation, PID and mount namespaces) and the Job against a fake
+# access sidecar fail instead of skipping. The contract schemas and Job
+# profiles the validator reads come from the contracts repository at a
+# pinned commit; the image is built with them as the named build context.
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+env:
+  # anvilkit-agent-contracts commit holding jobs/job.schema.json with the
+  # launch envelope's component, the IDENTITY_MISMATCH and PROFILE_DISABLED
+  # failure codes and the profile state/bindsSource fields, and
+  # jobs/profiles.json with validator-fixture-v1 and validator-source(-dev)-v1
+  # (P0.8): set to the published commit before this workflow can pass.
+  CONTRACTS_REF: PENDING-CONTRACTS-COMMIT
+jobs:
+  node:
+    runs-on: ubuntu-24.04
+    env:
+      ANVILKIT_VALIDATOR_CONTRACTS_DIR: ${{ github.workspace }}/.ci/contracts
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ancyloce/anvilkit-agent-contracts
+          ref: ${{ env.CONTRACTS_REF }}
+          path: .ci/contracts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+      - run: npm install -g pnpm@12.3.4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run check-types
+      - run: pnpm run lint
+      - run: pnpm run profiles:check
+      - run: pnpm run build
+      - name: Playwright's Chromium headless shell for the browser host check
+        run: pnpm exec playwright install --with-deps chromium-headless-shell
+      - name: tests as root (real step UIDs, the stop and its confirmation, the Job against a fake sidecar)
+        run: >-
+          sudo env "PATH=$PATH" HOME=/root ANVILKIT_REQUIRE_ROOT_TESTS=1
+          ANVILKIT_VALIDATOR_CONTRACTS_DIR="$ANVILKIT_VALIDATOR_CONTRACTS_DIR"
+          PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH"
+          pnpm test
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ancyloce/anvilkit-agent-contracts
+          ref: ${{ env.CONTRACTS_REF }}
+          path: .ci/contracts
+      - run: docker build --build-context contracts=.ci/contracts -t anvilkit-validator:ci .
