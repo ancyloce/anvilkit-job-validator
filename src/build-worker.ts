@@ -11,15 +11,19 @@
 // profiles build the same module whatever else changed on disk). The
 // externals' type declarations come from the trusted install through the
 // TypeScript plugin's own resolution and never enter the bundle. It emits
-// one ESM chunk and the declarations and writes a result document the
-// orchestrator reads. Its exit code is data to the orchestrator; the
-// orchestrator inspects the files it produced.
+// one ESM chunk and the declarations and writes a result document to fd 3,
+// the orchestrator's pipe (never a file in its output directory). Its exit
+// code is data to the orchestrator; the orchestrator inspects the files it
+// produced, as regular files only.
+//
+//   node build-worker <config.json>   (result on fd 3)
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import typescriptPlugin from "@rollup/plugin-typescript";
 import { type OutputChunk, type RollupLog, rollup } from "rollup";
+import { writeReport } from "./isolation.js";
 
 export interface BuildConfig {
 	sourceDir: string;
@@ -52,8 +56,8 @@ const typescript: TypescriptPlugin =
 	typeof typescriptPlugin === "function" ? (typescriptPlugin as unknown as TypescriptPlugin) : typescriptPlugin.default;
 
 async function main(): Promise<void> {
-	const [configPath, resultPath] = process.argv.slice(2);
-	if (!configPath || !resultPath) throw new Error("usage: build-worker <config.json> <result.json>");
+	const [configPath] = process.argv.slice(2);
+	if (!configPath) throw new Error("usage: build-worker <config.json> (result on fd 3)");
 	const config = JSON.parse(readFileSync(configPath, "utf8")) as BuildConfig;
 	const result: BuildResult = { ok: false, diagnostics: [], warnings: [], emitted: [] };
 	const externals = new Set(config.externals);
@@ -166,15 +170,13 @@ async function main(): Promise<void> {
 		if (e.frame) result.diagnostics.push(e.frame);
 		if (e.loc?.file) result.diagnostics.push(`${e.loc.file}:${e.loc.line ?? 0}`);
 	}
-	writeFileSync(resultPath, JSON.stringify(result));
+	writeReport(JSON.stringify(result));
 	process.exit(result.ok ? 0 : 1);
 }
 
 main().catch((err) => {
-	const resultPath = process.argv[3];
-	if (resultPath) {
-		writeFileSync(
-			resultPath,
+	try {
+		writeReport(
 			JSON.stringify({
 				ok: false,
 				kind: "infrastructure",
@@ -184,6 +186,8 @@ main().catch((err) => {
 				emitted: [],
 			}),
 		);
+	} catch {
+		// no report pipe: the orchestrator finds no result (OBSERVER_FAILED)
 	}
 	process.exit(2);
 });

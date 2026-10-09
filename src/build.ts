@@ -5,21 +5,11 @@
 // profiles alone: the candidate's rollup/vite/tsconfig/postcss files never
 // reach the build (source.ts already refuses them), its package.json never
 // becomes the published one, and no lifecycle script of any package runs.
-import {
-	chmodSync,
-	copyFileSync,
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	statSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BuildConfig, BuildResult } from "./build-worker.js";
 import { type Digest, sequence, sha256 } from "./digest.js";
-import { runStep, type StepIdentity, type StepOutcome, workerArgv } from "./isolation.js";
+import { readStepOutput, runStep, type StepIdentity, type StepOutcome, workerArgv } from "./isolation.js";
 import { type Profiles, packageRoot } from "./profiles.js";
 import type { SourceRead } from "./source.js";
 import { readTarball, type TarEntry, writeTarball } from "./tarball.js";
@@ -56,6 +46,8 @@ export class BuildError extends Error {
 export interface BuildOptions {
 	identity: StepIdentity;
 	timeoutMs?: number;
+	/** Test seam: replaces the build worker's argv (never used by the Job). */
+	workerArgv?: string[];
 }
 
 /** Writes the inventoried bytes as a read-only tree the build step may read and never change. */
@@ -155,8 +147,9 @@ export async function buildComponent(
 	// The step's output and scratch directories: created by the trusted
 	// process (which holds no CAP_CHOWN in the Job) as world-writable
 	// entries of the root-owned work tree, so the step identity can write
-	// into them and nothing else of the tree; the orchestrator reads what
-	// the step left there as data.
+	// into them and nothing else of the tree; the orchestrator reads the
+	// artifacts the step left there as data, regular files only, after the
+	// step's stop is confirmed, and its result only from its pipe.
 	const home = path.join(workDir, "home");
 	for (const dir of [outDir, home]) {
 		mkdirSync(dir);
@@ -208,11 +201,11 @@ export async function buildComponent(
 		inventory,
 	};
 	const configPath = path.join(workDir, "build-config.json");
-	const resultPath = path.join(outDir, "build-result.json");
 	writeFileSync(configPath, JSON.stringify(config), { mode: 0o444 });
-	const step = await runStep([...workerArgv("build-worker"), configPath, resultPath], {
+	const step = await runStep([...(opts.workerArgv ?? workerArgv("build-worker")), configPath], {
 		cwd: packageRoot,
 		env: { HOME: home, TMPDIR: home },
+		report: { maxBytes: 4 * 1024 * 1024 },
 		timeoutMs: opts.timeoutMs ?? limits.buildTimeoutMs,
 		identity: opts.identity,
 	});
@@ -225,9 +218,10 @@ export async function buildComponent(
 			`the build step exceeded ${opts.timeoutMs ?? limits.buildTimeoutMs} ms and was stopped`,
 		);
 	let result: BuildResult | undefined;
-	if (existsSync(resultPath)) {
+	if (step.report?.bytes.length) {
 		try {
-			result = JSON.parse(readFileSync(resultPath, "utf8")) as BuildResult;
+			if (step.report.truncated) throw new Error("the result exceeds its bound");
+			result = JSON.parse(step.report.bytes.toString("utf8")) as BuildResult;
 		} catch (err) {
 			throw new BuildError("OBSERVER_FAILED", `build result unreadable: ${(err as Error).message}`, [step.stderr]);
 		}
@@ -249,8 +243,9 @@ export async function buildComponent(
 	if (step.code !== 0) throw new BuildError("OBSERVER_FAILED", `build step reported ok but exited ${step.code}`);
 
 	// What the step produced, read from disk by the orchestrator: exactly
-	// index.js and the declarations under types/, nothing else.
-	const produced = listFiles(outDir).filter((p) => p !== "build-result.json");
+	// index.js and the declarations under types/, nothing else, each a
+	// regular file (no link, FIFO or device) read without following links.
+	const produced = listFiles(outDir);
 	const declarationFiles = produced.filter((p) => p.startsWith("types/") && p.endsWith(".d.ts"));
 	const unexpected = produced.filter((p) => p !== "index.js" && !declarationFiles.includes(p));
 	if (unexpected.length)
@@ -259,7 +254,14 @@ export async function buildComponent(
 		throw new BuildError("CANDIDATE_BUILD_FAILED", "the build produced no browser module");
 	if (!declarationFiles.includes("types/index.d.ts"))
 		throw new BuildError("CANDIDATE_BUILD_FAILED", "the build produced no entry declaration");
-	const moduleBytes = readFileSync(path.join(outDir, "index.js"));
+	const output = (rel: string): Buffer => {
+		try {
+			return readStepOutput(path.join(outDir, rel), limits.maxBrowserModuleBytes);
+		} catch (err) {
+			throw new BuildError("CANDIDATE_BUILD_FAILED", `the build output ${rel} is refused: ${(err as Error).message}`);
+		}
+	};
+	const moduleBytes = output("index.js");
 	if (moduleBytes.byteLength > limits.maxBrowserModuleBytes) {
 		throw new BuildError(
 			"CANDIDATE_BUILD_FAILED",
@@ -272,10 +274,10 @@ export async function buildComponent(
 	// byte for byte from the inventoried source (no preprocessor, no
 	// rewriting; a relative url() between styles/ and assets/ keeps working).
 	mkdirSync(path.join(packageDir, "dist", "types"), { recursive: true });
-	copyFileSync(path.join(outDir, "index.js"), path.join(packageDir, "dist", "index.js"));
+	writeFileSync(path.join(packageDir, "dist", "index.js"), moduleBytes, { mode: 0o644 });
 	for (const d of declarationFiles) {
 		mkdirSync(path.dirname(path.join(packageDir, "dist", d)), { recursive: true });
-		copyFileSync(path.join(outDir, d), path.join(packageDir, "dist", d));
+		writeFileSync(path.join(packageDir, "dist", d), output(d), { mode: 0o644 });
 	}
 	const decl = source.declaration;
 	let cssBytes = 0;

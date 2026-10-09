@@ -18,16 +18,33 @@
 // the host's frozen control object captured before the candidate module is
 // imported (the session, and with it the import, is answered only after
 // that). The page's own report is carried as data for the record; nothing
-// is decided from it. The worker writes its observations to the result
-// file and exits; the observer decides from them and from its own static
-// checks.
+// is decided from it. The worker reads its session on stdin, writes its
+// observations to fd 3 — the orchestrator's pipe, read only after every
+// process of the step identities is confirmed stopped — and exits; the
+// observer decides from them and from its own static checks. No file this
+// step could write is ever read as its report.
 //
-//   node host-browser-worker <session.json> <result.json>
+// Chromium's sandbox (G-04): the candidate module runs in Chromium's
+// renderer, which shares the worker's UID; Chromium's own sandbox is what
+// keeps a compromised renderer from the worker and its report pipe. The
+// worker asks for it whenever the runtime can give it to the step identity
+// (a non-root identity with user namespaces for Chromium's namespace
+// sandbox; the setuid sandbox is impossible under no_new_privs). Under the
+// session's "preferred" policy (the DEVELOPMENT_ONLY validator profile) a
+// runtime without one — Chromium refuses its sandbox to root (the caller
+// identity on a developer host), and the containerd default seccomp profile
+// of the development foundation refuses the user namespace — runs without
+// it and the report records why; under "required" (a QUALIFIED profile)
+// that is an infrastructure failure. Qualifying the boundary on the target
+// runtime is G-04.
+//
+//   node host-browser-worker   (session on stdin, report on fd 3)
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { chromium, type JSHandle, type Route } from "playwright";
+import { writeReport } from "./isolation.js";
 
 /** The synthetic origin of the host page: never resolved, every request answered by this worker. */
 export const hostOrigin = "http://anvilkit-host.invalid";
@@ -53,6 +70,8 @@ export interface BrowserSession {
 	/** The fixed-fixture interaction contract: a click must advance this DOM attribute by `increment` (null: none required). */
 	interaction: { counterAttribute: string; increment: number } | null;
 	timeoutMs: number;
+	/** Chromium's sandbox: "required" refuses to run without it, "preferred" runs without it where the runtime has none and says why. */
+	chromiumSandbox: "required" | "preferred";
 }
 
 /** One stylesheet as the isolated world found it in the document. */
@@ -112,6 +131,8 @@ export interface BrowserWorkerResult {
 	/** Playwright's own request log: every request the page made, with the browser's resource type. */
 	pageRequests: Array<{ url: string; resourceType: string; status: number | null; failure?: string }>;
 	browser?: string;
+	/** Whether Chromium ran with its sandbox, and why not when it did not. */
+	chromiumSandbox?: { enabled: boolean; reason?: string };
 }
 
 const types: Record<string, string> = {
@@ -145,12 +166,48 @@ interface ObserveArgs {
 	expectedTexts: string[];
 }
 
+/**
+ * Launches the headless shell with Chromium's sandbox wherever the runtime
+ * gives the step identity one; under "preferred", a runtime without one
+ * gives a launch without it and the reason.
+ */
+async function launch(
+	policy: BrowserSession["chromiumSandbox"],
+): Promise<{ browser: Awaited<ReturnType<typeof chromium.launch>>; sandbox: { enabled: boolean; reason?: string } }> {
+	let reason: string;
+	if (process.getuid?.() === 0) {
+		reason = "the step runs as root (the caller identity of a developer host): Chromium refuses its sandbox to root";
+	} else {
+		try {
+			return { browser: await chromium.launch({ headless: true, chromiumSandbox: true }), sandbox: { enabled: true } };
+		} catch (err) {
+			reason = `the runtime gives the step identity no Chromium sandbox: ${
+				String((err as Error).message ?? err)
+					.split("\n")
+					.find((l) => /sandbox/i.test(l))
+					?.trim()
+					.slice(0, 300) ?? "the sandboxed launch failed"
+			}`;
+		}
+	}
+	if (policy === "required") throw new Error(`Chromium's sandbox is required: ${reason}`);
+	return {
+		browser: await chromium.launch({ headless: true, chromiumSandbox: false }),
+		sandbox: { enabled: false, reason },
+	};
+}
+
+let reported = false;
+function report(result: BrowserWorkerResult): void {
+	if (reported) return;
+	reported = true;
+	writeReport(JSON.stringify(result));
+}
+
 async function main(): Promise<void> {
-	const [sessionPath, resultPath] = process.argv.slice(2);
-	if (!sessionPath || !resultPath) throw new Error("usage: host-browser-worker <session.json> <result.json>");
-	const session = JSON.parse(readFileSync(sessionPath, "utf8")) as BrowserSession;
+	const session = JSON.parse(readFileSync(0, "utf8")) as BrowserSession;
 	const result: BrowserWorkerResult = { ok: false, consoleErrors: [], requests: [], pageRequests: [] };
-	const write = () => writeFileSync(resultPath, JSON.stringify(result));
+	const write = () => report(result);
 	const html = readFileSync(session.htmlPath);
 	// The session is answered only once the worker holds its handle on the
 	// host's control object; until then the request stays paused.
@@ -204,7 +261,9 @@ async function main(): Promise<void> {
 	let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 	const pageErrors: string[] = [];
 	try {
-		browser = await chromium.launch({ headless: true, chromiumSandbox: false });
+		const launched = await launch(session.chromiumSandbox);
+		browser = launched.browser;
+		result.chromiumSandbox = launched.sandbox;
 		result.browser = browser.version();
 		// No service worker (it could answer the page's later requests) and
 		// nothing but this worker's answers: any other origin is refused.
@@ -381,19 +440,17 @@ main()
 	.then(
 		() => undefined,
 		(err) => {
-			const resultPath = process.argv[3];
-			if (resultPath) {
-				writeFileSync(
-					resultPath,
-					JSON.stringify({
-						ok: false,
-						kind: "infrastructure",
-						error: String((err as Error).stack ?? err),
-						consoleErrors: [],
-						requests: [],
-						pageRequests: [],
-					}),
-				);
+			try {
+				report({
+					ok: false,
+					kind: "infrastructure",
+					error: String((err as Error).stack ?? err),
+					consoleErrors: [],
+					requests: [],
+					pageRequests: [],
+				});
+			} catch {
+				// no report pipe: the orchestrator finds no report (OBSERVER_FAILED)
 			}
 			process.exit(2);
 		},

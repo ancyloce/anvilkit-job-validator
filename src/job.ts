@@ -1,43 +1,53 @@
-// The validator Job (DD-03 §4–§6, DD-04 §3, delivery.md P10d): the trusted
-// process of the anvilkit-validator image. It reads the launch envelope,
-// waits for the execution scope from the access sidecar (the only process
-// of the Pod with a network identity), runs the chain — complete source,
-// protected build, independent certification — on the reviewed fixed
-// component baked into the image, moves the verified bytes through the
-// sidecar's transfer route (BeginTransfer, one PUT, FinalizeTransfer under
-// the current instance) and submits the result manifest naming the
-// finalized handles (AcceptResult under the current epoch), then submits
-// the same bytes once more to record that acceptance is idempotent. The
-// candidate-content steps run under the candidate identity through
-// setpriv; this process never imports candidate modules.
+// The validator Job (DD-03 §4–§6, DD-04 §3, delivery.md P10d, P0.8): the
+// trusted process of the anvilkit-validator image. It reads the launch
+// envelope, waits for the execution scope from the access sidecar (the only
+// process of the Pod with a network identity), resolves the launch's own
+// Job profile from the contracts' profiles.json and with it which source it
+// may certify — the reviewed fixed component baked into the image, or, only
+// under a profile that binds source, the archive the launch binds by handle
+// together with the allocated component identity — runs the chain —
+// complete source, protected build, independent certification — moves the
+// verified bytes through the sidecar's transfer route (BeginTransfer, one
+// PUT, FinalizeTransfer under the current instance) and submits the result
+// manifest naming the finalized handles (AcceptResult under the current
+// epoch), then submits the same bytes once more to record that acceptance
+// is idempotent. The candidate-content steps run under the candidate
+// identity and the SSR harness under its own, both through setpriv; this
+// process never imports candidate modules.
 //
-// Exit 0 when the trusted flow completed (whatever the verdict), 1 when it
-// could not (no scope, no authority, a refused submission, a toolchain the
-// profile does not freeze), 2 for a configuration or layout defect.
+// Exit 0 when the trusted flow completed (whatever the verdict, a refused
+// launch included), 1 when it could not (no scope, no authority, a refused
+// submission, a toolchain the profile does not freeze), 2 for a
+// configuration or layout defect.
 import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { BuildError, type BuildOutput, buildComponent } from "./build.js";
-import { jobsSchemaId, parseStrictObject, validateAgainst } from "./contracts.js";
+import { contractsDir, jobsSchemaId, parseStrictObject, validateAgainst } from "./contracts.js";
 import { sha256 } from "./digest.js";
 import { InputError, unpackSourceArchive } from "./input.js";
 import type { StepIdentity } from "./isolation.js";
 import { loadProfiles, ProfileError, type Profiles, packageRoot, verifyToolchain } from "./profiles.js";
-import { readSource, SourceError, type SourceRead } from "./source.js";
+import { allocatedIdentity, type LaunchComponent, readSource, SourceError, type SourceRead } from "./source.js";
 import { type Certification, certify, type FailureCode, verdictFor } from "./validate.js";
 
 export interface JobConfig {
 	paths: { workspace: string; verdict: string; sockets: string; termination_log: string; fixed_source: string };
 	candidate: { identity: "setpriv" | "caller"; uid: number; gid: number };
+	/** The SSR harness identity (a UID of the validator's steps alone, never the candidate's or the sidecar's). */
+	harness: { uid: number; gid: number };
 	sidecar: { uid: number; wait_ms: number; request_timeout_ms: number };
 	observer: { identity: string };
 	host_checks: { ssr: boolean; browser: boolean };
+	/** The reviewed revision of the fixed component (paths.fixed_source) when the launch names no allocated identity; never a bound source's. */
 	source_revision: string;
 	validator_profile: string;
 }
 
-interface Envelope {
+export type { LaunchComponent };
+
+export interface Envelope {
 	schemaVersion: 1;
 	launchId: string;
 	launchKey: string;
@@ -49,7 +59,82 @@ interface Envelope {
 	executionEpoch: string;
 	launchEpoch: string;
 	deadline: string;
+	component?: LaunchComponent;
 	inputs: Array<{ name: string; digest: string; handle?: string }>;
+}
+
+/**
+ * A launch its own Job profile does not admit (B-21): a source input under
+ * a profile that runs the fixed component only, a source-binding profile
+ * without a handle-bound source or without the allocated identity. Refused
+ * before any source is loaded, with PROFILE_UNQUALIFIED (verdict
+ * infrastructure_failed): the launch, not the candidate, is at fault.
+ */
+export class LaunchRefusal extends Error {
+	readonly code = "PROFILE_UNQUALIFIED";
+}
+
+/** What the launch's Job profile says about the source a validator launch may certify. */
+export interface JobProfileFacts {
+	profileId: string;
+	candidateCode: boolean;
+	/** True only for a profile that executes a launch-bound source archive (the input named source). */
+	bindsSource: boolean;
+}
+
+/**
+ * The launch's own Job profile from the contracts' jobs/profiles.json, by
+ * the envelope's profileId. The image carries the validator profiles'
+ * projection of that document (profileId, jobKind, candidateCode,
+ * bindsSource; no image digest, which would pin the image itself).
+ */
+export function jobProfile(
+	profileId: string,
+	file = path.join(contractsDir(), "jobs", "profiles.json"),
+): JobProfileFacts {
+	const doc = parseStrictObject(readFileSync(file, "utf8"), path.basename(file));
+	if (!Array.isArray(doc.profiles)) throw new Error(`${path.basename(file)}: no profiles`);
+	const matches = (doc.profiles as Array<Record<string, unknown>>).filter((p) => p?.profileId === profileId);
+	if (matches.length !== 1) throw new LaunchRefusal(`profile ${profileId} is not one Job profile of profiles.json`);
+	const p = matches[0] as Record<string, unknown>;
+	if (p.jobKind !== "validator") throw new LaunchRefusal(`profile ${profileId} is a ${String(p.jobKind)} profile`);
+	if (typeof p.candidateCode !== "boolean" || (p.bindsSource !== undefined && typeof p.bindsSource !== "boolean"))
+		throw new Error(`${path.basename(file)}: profile ${profileId} is malformed`);
+	if (p.bindsSource === true && p.candidateCode !== true)
+		throw new LaunchRefusal(`profile ${profileId} binds source without declaring candidate code`);
+	return { profileId, candidateCode: p.candidateCode, bindsSource: p.bindsSource === true };
+}
+
+/** Which source a launch certifies: the fixed component, or the bound archive with the allocated identity. */
+export type SourceSelection =
+	| { kind: "fixed" }
+	| { kind: "bound"; digest: string; handle: string; component: LaunchComponent };
+
+/**
+ * The bound-source rule (B-21): a source input is accepted only under a
+ * profile that binds source; such a profile requires exactly one source
+ * input with a handle and the allocated component identity — there is no
+ * fallback to the fixed component — and a profile that does not bind
+ * source runs the fixed component only.
+ */
+export function selectSource(env: Pick<Envelope, "inputs" | "component">, profile: JobProfileFacts): SourceSelection {
+	const sources = env.inputs.filter((i) => i.name === "source");
+	if (sources.length > 1) throw new LaunchRefusal("the launch names the source input more than once");
+	const source = sources[0];
+	if (!profile.bindsSource) {
+		if (source)
+			throw new LaunchRefusal(`profile ${profile.profileId} runs the fixed component only and refuses a source input`);
+		return { kind: "fixed" };
+	}
+	if (!source)
+		throw new LaunchRefusal(
+			`profile ${profile.profileId} binds a source and the launch names none (no fallback to the fixed component)`,
+		);
+	if (!source.handle)
+		throw new LaunchRefusal(`profile ${profile.profileId} binds a source and the launch's source input has no handle`);
+	if (!env.component)
+		throw new LaunchRefusal(`profile ${profile.profileId} binds a source and the launch names no source revision`);
+	return { kind: "bound", digest: source.digest, handle: source.handle, component: env.component };
 }
 
 interface Scope {
@@ -121,6 +206,7 @@ function loadConfig(): JobConfig {
 			...(doc.paths ?? {}),
 		},
 		candidate: { identity: "setpriv", uid: 10001, gid: 10001, ...(doc.candidate ?? {}) },
+		harness: { uid: 10003, gid: 10003, ...(doc.harness ?? {}) },
 		sidecar: { uid: 10002, wait_ms: 60_000, request_timeout_ms: 60_000, ...(doc.sidecar ?? {}) },
 		observer: { identity: "anvilkit-validator-supervisor", ...(doc.observer ?? {}) },
 		host_checks: { ssr: true, browser: true, ...(doc.host_checks ?? {}) },
@@ -131,6 +217,11 @@ function loadConfig(): JobConfig {
 		if (k in (doc as Record<string, unknown>))
 			throw new Error(`config: ${k} is a launch fact and is refused inside the file`);
 	}
+	// The stop kills every process of a step UID: the step UIDs are the
+	// validator's alone, distinct from each other, from root and from the sidecar.
+	const uids = [c.candidate.uid, c.harness.uid];
+	if (uids.some((u) => !Number.isInteger(u) || u <= 0 || u === c.sidecar.uid) || uids[0] === uids[1])
+		throw new Error("config: the candidate and harness UIDs must be distinct, non-root and not the sidecar's");
 	return c;
 }
 
@@ -313,7 +404,11 @@ interface Outcome {
 	error?: string;
 }
 
-/** The chain on the fixed source; every refusal becomes a verdict, never an exception past this point. */
+/**
+ * The chain on the selected source at the certified revision, bound to the
+ * allocated identity when there is one; every refusal becomes a verdict,
+ * never an exception past this point.
+ */
 async function runChain(
 	cfg: JobConfig,
 	profiles: Profiles,
@@ -321,13 +416,15 @@ async function runChain(
 	identity: StepIdentity,
 	workDir: string,
 	sourceDir: string,
+	binding: { sourceRevision: string; component?: LaunchComponent },
 ): Promise<Outcome> {
 	let source: SourceRead;
 	try {
 		source = readSource(sourceDir, {
-			sourceRevision: cfg.source_revision,
+			sourceRevision: binding.sourceRevision,
 			profile: profiles.build,
 			limits: profiles.validator.limits,
+			identity: allocatedIdentity(binding.component),
 		});
 	} catch (err) {
 		if (err instanceof SourceError)
@@ -347,7 +444,15 @@ async function runChain(
 			};
 		throw err;
 	}
-	const certification = await certify({ source, build, profiles, toolchain, identity, hostChecks: cfg.host_checks });
+	const certification = await certify({
+		source,
+		build,
+		profiles,
+		toolchain,
+		identity,
+		hostChecks: cfg.host_checks,
+		component: binding.component,
+	});
 	return { verdict: certification.verdict, failureCode: certification.failureCode, certification, source, build };
 }
 
@@ -449,22 +554,57 @@ export async function main(): Promise<number> {
 		}
 		const identity: StepIdentity =
 			cfg.candidate.identity === "setpriv"
-				? { mode: "setpriv", uid: cfg.candidate.uid, gid: cfg.candidate.gid }
+				? {
+						mode: "setpriv",
+						uid: cfg.candidate.uid,
+						gid: cfg.candidate.gid,
+						harnessUid: cfg.harness.uid,
+						harnessGid: cfg.harness.gid,
+					}
 				: { mode: "caller" };
 		summary.stepIdentity = identity.mode;
 
-		// The source: the archive the envelope binds by handle (loaded by
-		// the sidecar from Control's accepted stage, verified against the
-		// envelope's digest, unpacked under the source rules) or, for the
-		// fixed development profile, the reviewed component of the image.
+		// A refusal before the chain: a result without outputs under the
+		// profile's verdict for the code, submitted like any other.
+		const { verdict: verdictDir } = cfg.paths;
+		const observerIdentity = cfg.observer.identity;
+		const refuse = async (failureCode: FailureCode, message: string): Promise<number> => {
+			const verdict = verdictFor(profiles, failureCode);
+			summary.verdict = verdict;
+			summary.failureCode = failureCode;
+			summary.detail = message.slice(0, 300);
+			writeFileSync(path.join(verdictDir, "verdict.json"), `${JSON.stringify({ verdict, failureCode })}\n`, {
+				mode: 0o600,
+			});
+			const manifest = resultManifest(env, verdict, failureCode, []);
+			const stage = await sidecar.submit(verdict, failureCode, observerIdentity, manifest);
+			summary.outcome = "completed";
+			summary.stageId = stage.stageId;
+			log(`launch refused (${failureCode}): ${message}; result accepted as stage ${stage.stageId}`);
+			terminate();
+			return 0;
+		};
+
+		// The source (B-21): the launch's own Job profile decides. A profile
+		// that binds source gets the archive the envelope binds by handle
+		// (loaded by the sidecar from Control's accepted stage, verified
+		// against the envelope's digest, unpacked under the source rules) and
+		// the allocated identity the certification binds; a profile that does
+		// not runs the reviewed fixed component of the image only.
+		let selection: SourceSelection;
+		try {
+			selection = selectSource(env, jobProfile(env.profileId));
+		} catch (err) {
+			if (err instanceof LaunchRefusal) return await refuse(err.code, err.message);
+			throw err;
+		}
 		let sourceDir = cfg.paths.fixed_source;
-		const sourceInput = env.inputs.find((i) => i.name === "source" && i.handle);
-		if (sourceInput) {
+		if (selection.kind === "bound") {
 			const loaded = await sidecar.loadInput("source");
 			const archive = await sidecar.readInput("source", profiles.validator.limits.maxSourceBytes * 2 + 1_048_576);
-			if (sha256(archive) !== sourceInput.digest || loaded.digest !== sourceInput.digest)
+			if (sha256(archive) !== selection.digest || loaded.digest !== selection.digest)
 				throw new Error(
-					`the loaded source hashes to ${sha256(archive)} (sidecar: ${loaded.digest}), the envelope binds ${sourceInput.digest}`,
+					`the loaded source hashes to ${sha256(archive)} (sidecar: ${loaded.digest}), the envelope binds ${selection.digest}`,
 				);
 			sourceDir = path.join(cfg.paths.workspace, "input-source");
 			rmSync(sourceDir, { recursive: true, force: true });
@@ -472,26 +612,18 @@ export async function main(): Promise<number> {
 				const files = await unpackSourceArchive(archive, sourceDir, profiles.validator.limits);
 				log(`source input unpacked: ${files.length} files`);
 			} catch (err) {
-				if (err instanceof InputError) {
-					summary.verdict = "invalid";
-					summary.failureCode = "PATH_ESCAPE";
-					summary.detail = err.message.slice(0, 300);
-					writeFileSync(
-						path.join(cfg.paths.verdict, "verdict.json"),
-						`${JSON.stringify({ verdict: "invalid", failureCode: "PATH_ESCAPE" })}\n`,
-						{ mode: 0o600 },
-					);
-					const manifest = resultManifest(env, "invalid", "PATH_ESCAPE", []);
-					const stage = await sidecar.submit("invalid", "PATH_ESCAPE", cfg.observer.identity, manifest);
-					summary.outcome = "completed";
-					summary.stageId = stage.stageId;
-					log(`source input refused: ${err.message}; result accepted as stage ${stage.stageId}`);
-					return 0;
-				}
+				if (err instanceof InputError) return await refuse(err.code, `source input refused: ${err.message}`);
 				throw err;
 			}
 		}
-		const outcome = await runChain(cfg, profiles, toolchain, identity, workDir, sourceDir);
+		// The certified revision is the launch's: the allocated identity's
+		// when the launch names one (always, for a bound source), otherwise
+		// the fixed component's reviewed revision.
+		const component = selection.kind === "bound" ? selection.component : env.component;
+		const outcome = await runChain(cfg, profiles, toolchain, identity, workDir, sourceDir, {
+			sourceRevision: component?.sourceRevision ?? cfg.source_revision,
+			component,
+		});
 		summary.verdict = outcome.verdict;
 		summary.failureCode = outcome.failureCode;
 		if (outcome.certification) summary.complete = outcome.certification.complete;

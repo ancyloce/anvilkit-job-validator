@@ -5,11 +5,15 @@
 // byte for byte, the declarations, the protected fixtures before and after
 // use, and the renders of the SSR and browser fixtures in child processes.
 // Exit codes and self-reports of those steps are data; a verdict comes only
-// from what the observer verified. The certification binds the digests of
-// source, profiles, npm, browser, CSS and Host ABI; any change of one of
-// them makes an earlier certification unusable.
+// from what the observer verified. The steps hand their reports over the
+// orchestrator's own pipe (fd 3) once every process of the step identities
+// is confirmed stopped; no report is ever read from a file a step could
+// write. The certification binds the digests of source, profiles, npm,
+// browser, CSS and Host ABI, and the allocated component identity when the
+// launch names one; any change of one of them makes an earlier
+// certification unusable.
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import * as csstree from "css-tree";
@@ -21,7 +25,13 @@ import type { BrowserSession, BrowserWorkerResult } from "./host-browser-worker.
 import { ensureHostBundles, type HostBundles } from "./host-bundles.js";
 import { runStep, type StepIdentity, type StepOutcome, type StepStop, workerArgv } from "./isolation.js";
 import { type Profiles, packageRoot, protectedFixtureDigests, type Verdict, verifyToolchain } from "./profiles.js";
-import { manifestDigest, type SourceRead } from "./source.js";
+import {
+	allocatedIdentity,
+	identityMismatch,
+	type LaunchComponent,
+	manifestDigest,
+	type SourceRead,
+} from "./source.js";
 import { readTarball } from "./tarball.js";
 
 export type FailureCode =
@@ -38,7 +48,8 @@ export type FailureCode =
 	| "DEADLINE_EXCEEDED"
 	| "OBSERVER_FAILED"
 	| "RESULT_DIGEST_MISMATCH"
-	| "CANCELED";
+	| "CANCELED"
+	| "IDENTITY_MISMATCH";
 
 export interface CheckResult {
 	name: string;
@@ -99,7 +110,8 @@ export interface Certification {
 	npmEntries: Array<{ path: string; digest: Digest; sizeBytes: string }>;
 	browser: { imports: string[]; exports: string[] };
 	host: { status: "DEVELOPMENT_ONLY" | "QUALIFIED"; ssr?: unknown; browser?: unknown };
-	steps: { build: StepEvidence; ssr?: StepEvidence; browser?: StepEvidence };
+	/** ssr is the render child (candidate identity), ssrHarness the harness that judged it (harness identity). */
+	steps: { build: StepEvidence; ssr?: StepEvidence; ssrHarness?: StepEvidence; browser?: StepEvidence };
 	startedAt: string;
 	completedAt: string;
 	evidenceDigest: Digest;
@@ -114,8 +126,15 @@ export interface CertifyInput {
 	hostChecks: { ssr: boolean; browser: boolean };
 	/** Root of the protected fixtures (fixtures/host); the package root by default. */
 	fixturesRoot?: string;
+	/**
+	 * What the launch certifies (P0.8): the source's revision must be this
+	 * sourceRevision and, when the launch names the allocated identity, the
+	 * source must declare that componentId, puckType and package name; a
+	 * difference is IDENTITY_MISMATCH.
+	 */
+	component?: LaunchComponent;
 	/** Test seam: replaces the argv of a step (never used by the Job). */
-	stepArgv?: { ssr?: string[]; browser?: string[] };
+	stepArgv?: { ssrRender?: string[]; ssrHarness?: string[]; browser?: string[] };
 	now?: () => Date;
 }
 
@@ -161,6 +180,35 @@ function stepEvidence(s: StepOutcome, identity: StepIdentity): StepEvidence {
 	if (s.stderr) out.stderrTail = s.stderr.slice(-2000);
 	return out;
 }
+
+/**
+ * The report a stopped step wrote to the orchestrator's pipe (fd 3): one
+ * JSON object, within its bound. Anything else — no report, a truncated
+ * one, bytes that are not one object — is no observation (OBSERVER_FAILED).
+ */
+function stepReport<T>(step: StepOutcome, what: string): T {
+	const bytes = step.report?.bytes;
+	if (!bytes?.length)
+		throw new CheckFailure(
+			"OBSERVER_FAILED",
+			`the ${what} left no report (exit ${step.code}); an exit code certifies nothing`,
+		);
+	if (step.report?.truncated) throw new CheckFailure("OBSERVER_FAILED", `the ${what}'s report exceeds its bound`);
+	let value: unknown;
+	try {
+		value = JSON.parse(bytes.toString("utf8"));
+	} catch {
+		value = undefined;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new CheckFailure("OBSERVER_FAILED", `the ${what}'s report is not one JSON object`);
+	return value as T;
+}
+
+// Bounds of what the steps hand over on fd 3: the render child's frame (two
+// HTML strings of at most 4 MiB each and the meta), the reports.
+const maxRenderFrameBytes = 12 * 1024 * 1024;
+const maxReportBytes = 4 * 1024 * 1024;
 
 /** Reads an entry's bytes from the staged package directory (the same bytes the tarball holds, verified by digest). */
 function packageBytes(build: BuildOutput, rel: string, expected: Digest): Buffer {
@@ -320,6 +368,18 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 			throw new CheckFailure("OBSERVER_FAILED", "the source bytes are not the manifest's");
 		if (source.manifest.files.length !== source.files.size)
 			throw new CheckFailure("OBSERVER_FAILED", "the source inventory and the manifest differ");
+		// The allocated identity, re-established here even though the source
+		// read already refused a difference: what is certified is the identity
+		// the launch allocated, at the revision the launch names.
+		if (input.component) {
+			const allocated = allocatedIdentity(input.component);
+			const mismatch =
+				(allocated ? identityMismatch(source, allocated) : undefined) ??
+				(source.manifest.sourceRevision !== input.component.sourceRevision
+					? `source revision ${source.manifest.sourceRevision} is not the allocated ${input.component.sourceRevision}`
+					: undefined);
+			if (mismatch) throw new CheckFailure("IDENTITY_MISMATCH", mismatch);
+		}
 	});
 	await run("toolchain", () => {
 		let actual: Record<string, string>;
@@ -571,26 +631,25 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 	});
 
 	// Host fixtures: candidate content executes only here, in child
-	// processes under the step identity, and only when the static checks
+	// processes under the step identities, and only when the static checks
 	// passed.
 	const fieldNames = decl.editableFields.map((f) => f.name);
 	const defaultProps: Record<string, unknown> = {};
 	for (const f of decl.editableFields) if (f.default !== undefined) defaultProps[f.name] = f.default;
-	const expectedTexts = decl.editableFields
-		.filter(
-			(f) => (f.type === "text" || f.type === "textarea") && typeof f.default === "string" && f.default.length > 0,
-		)
-		.map((f) => f.default as string);
-	// A fresh directory per certification: a report of an earlier run is
-	// never read as this run's evidence.
-	const evidenceDir = path.join(build.workDir, `observer-${randomBytes(6).toString("hex")}`);
-	if (existsSync(evidenceDir)) throw new CheckFailure("OBSERVER_FAILED", "evidence directory already exists");
-	mkdirSync(evidenceDir, { recursive: false, mode: 0o755 });
-	// Each step writes its report and scratch into its own world-writable
-	// directory of the root-owned evidence tree (the observer holds no
-	// CAP_CHOWN in the Job); the observer reads the report as data.
-	const stepDir = (name: string): string => {
-		const dir = path.join(evidenceDir, name);
+	const textFields = decl.editableFields.filter(
+		(f) => (f.type === "text" || f.type === "textarea") && typeof f.default === "string",
+	);
+	const expectedTexts = textFields.filter((f) => (f.default as string).length > 0).map((f) => f.default as string);
+	// The field the observer renders with a value of its own (the Puck render
+	// of the SSR check, the browser's re-render): the first declared text
+	// field; a component without one has nothing to show.
+	const nonceField = textFields[0]?.name ?? null;
+	// A scratch directory per step for its HOME and TMPDIR, created by the
+	// trusted process (which holds no CAP_CHOWN in the Job) as a
+	// world-writable entry of the root-owned work tree. Nothing in it is ever
+	// read: the steps' reports come over the orchestrator's pipe.
+	const scratchDir = (name: string): string => {
+		const dir = path.join(build.workDir, `scratch-${name}-${randomBytes(6).toString("hex")}`);
 		mkdirSync(dir);
 		chmodSync(dir, 0o1777);
 		return dir;
@@ -599,38 +658,61 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 
 	if (input.hostChecks.ssr) {
 		await run("ssr-render", async () => {
-			const dir = stepDir("ssr");
-			const expectations = path.join(evidenceDir, "ssr-expectations.json");
-			const resultPath = path.join(dir, "ssr-result.json");
-			if (existsSync(resultPath)) throw new CheckFailure("OBSERVER_FAILED", "a report exists before the SSR step ran");
-			writeFileSync(
-				expectations,
-				JSON.stringify({
-					modulePath: build.browser.file,
-					moduleDigest,
-					puckType: decl.puckType,
-					fieldNames,
-					defaultProps,
-					expectedTexts,
-				}),
-				{ mode: 0o444 },
-			);
-			const argv = input.stepArgv?.ssr ?? [process.execPath, path.join(fixturesRoot, "fixtures", "host", "ssr.mjs")];
-			const step = await runStep([...argv, expectations, resultPath], {
+			const ssrScript = path.join(fixturesRoot, "fixtures", "host", "ssr.mjs");
+			const scratch = scratchDir("ssr");
+			// The value the Puck render must show: chosen here and handed to the
+			// render child only as a prop of the render it makes.
+			const nonce = nonceField ? `anvilkit-${randomBytes(8).toString("hex")}` : null;
+			// The render child, the only code that imports the candidate: the
+			// candidate identity, inputs on stdin, the rendered HTML on fd 3.
+			const render = await runStep(input.stepArgv?.ssrRender ?? [process.execPath, ssrScript, "--render"], {
 				cwd: packageRoot,
-				env: { HOME: dir, TMPDIR: dir },
+				env: { HOME: scratch, TMPDIR: scratch },
+				input: JSON.stringify({
+					modulePath: build.browser.file,
+					puckType: decl.puckType,
+					directProps: defaultProps,
+					puckProps: nonce && nonceField ? { ...defaultProps, [nonceField]: nonce } : defaultProps,
+				}),
+				report: { maxBytes: maxRenderFrameBytes },
 				timeoutMs: limits.hostCheckTimeoutMs,
 				identity: input.identity,
 			});
-			steps.ssr = stepEvidence(step, input.identity);
-			if (!step.stop.confirmed) throw new CheckFailure("OBSERVER_FAILED", `the SSR step's ${step.stop.error}`);
-			if (step.timedOut) throw new CheckFailure("DEADLINE_EXCEEDED", "the SSR step exceeded its bound");
-			if (!existsSync(resultPath))
-				throw new CheckFailure(
-					"OBSERVER_FAILED",
-					`the SSR step left no report (exit ${step.code}); an exit code certifies nothing`,
-				);
-			const report = JSON.parse(readFileSync(resultPath, "utf8")) as {
+			steps.ssr = stepEvidence(render, input.identity);
+			// Nothing the render child wrote is used while a process of the
+			// candidate identity may still run: the stop covers every process of
+			// the step identities, a detached one included.
+			if (!render.stop.confirmed)
+				throw new CheckFailure("OBSERVER_FAILED", `the SSR render step's ${render.stop.error}`);
+			if (render.timedOut) throw new CheckFailure("DEADLINE_EXCEEDED", "the SSR render step exceeded its bound");
+			if (render.report?.truncated)
+				throw new CheckFailure("CANDIDATE_TEST_FAILED", `the SSR render's output exceeds ${maxRenderFrameBytes} bytes`);
+			// The harness, under its own identity once the candidate is gone:
+			// the render child's frame as bytes on stdin, the verdict on fd 3.
+			const judged = await runStep(input.stepArgv?.ssrHarness ?? [process.execPath, ssrScript, "--judge"], {
+				cwd: packageRoot,
+				input: JSON.stringify({
+					modulePath: build.browser.file,
+					moduleDigest,
+					fieldNames,
+					expectedTexts,
+					puckExpectedTexts: textFields
+						.filter((f) => f.name !== nonceField && (f.default as string).length > 0)
+						.map((f) => f.default as string),
+					nonce,
+					frame: render.report?.bytes.toString("utf8") ?? "",
+					renderExit: `exit ${render.code}, signal ${render.signal}`,
+				}),
+				report: { maxBytes: maxReportBytes },
+				timeoutMs: limits.hostCheckTimeoutMs,
+				identity: input.identity,
+				runAs: "harness",
+			});
+			steps.ssrHarness = stepEvidence(judged, input.identity);
+			if (!judged.stop.confirmed)
+				throw new CheckFailure("OBSERVER_FAILED", `the SSR harness step's ${judged.stop.error}`);
+			if (judged.timedOut) throw new CheckFailure("OBSERVER_FAILED", "the SSR harness exceeded its bound");
+			const report = stepReport<{
 				ok?: boolean;
 				moduleDigest?: string;
 				exports?: string[];
@@ -639,7 +721,7 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				directHtmlDigest?: string;
 				puckHtmlDigest?: string;
 				reactVersion?: string;
-			};
+			}>(judged, "SSR harness");
 			host.ssr = report;
 			// The module digest is the harness's own read of the built module from
 			// disk, not anything the candidate reported; a mismatch means the step
@@ -647,8 +729,8 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 			if (report.moduleDigest !== moduleDigest)
 				throw new CheckFailure("OBSERVER_FAILED", "the SSR report is not about the module the observer handed over");
 			// Whether the render completed is decided before the exports are read:
-			// a candidate that exits without rendering, or forges a report the
-			// trusted harness rejects, leaves no completed render — a candidate
+			// a candidate that exits without rendering, or leaves anything but a
+			// render of this run's props, leaves no completed render — a candidate
 			// failure, not an exports mismatch.
 			if (report.ok !== true)
 				throw new CheckFailure("CANDIDATE_TEST_FAILED", (report.errors ?? []).join("; ") || "SSR render failed");
@@ -686,11 +768,6 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				cssText[href] = packageBytes(build, `dist/${rel}`, entry.digest).toString("utf8");
 				cssResources[href] = (stylesheets.get(rel)?.resources ?? []).map((p) => `/candidate/${p}`);
 			}
-			// The field the worker re-renders with a value of its own: the first
-			// declared text field (a component without one has nothing to show).
-			const nonceField =
-				decl.editableFields.find((f) => (f.type === "text" || f.type === "textarea") && typeof f.default === "string")
-					?.name ?? null;
 			const session: BrowserSession = {
 				htmlPath: path.join(fixturesRoot, "fixtures", "host", "browser", "index.html"),
 				observerPath: path.join(fixturesRoot, "fixtures", "host", "browser", "observer.js"),
@@ -707,36 +784,32 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				nonceField,
 				interaction: profiles.validator.interaction ?? null,
 				timeoutMs: Math.max(5_000, limits.hostCheckTimeoutMs - 10_000),
+				// Chromium's own sandbox around the renderer that runs the
+				// candidate module (G-04): a qualified profile requires it; the
+				// development profile uses it wherever the runtime gives the step
+				// identity one and otherwise records why it ran without.
+				chromiumSandbox: profiles.validator.status === "QUALIFIED" ? "required" : "preferred",
 			};
-			const dir = stepDir("browser");
-			const sessionPath = path.join(evidenceDir, "browser-session.json");
-			const resultPath = path.join(dir, "browser-result.json");
-			if (existsSync(resultPath))
-				throw new CheckFailure("OBSERVER_FAILED", "a report exists before the browser step ran");
-			writeFileSync(sessionPath, JSON.stringify(session), { mode: 0o444 });
-			const argv = input.stepArgv?.browser ?? workerArgv("host-browser-worker");
-			const step = await runStep([...argv, sessionPath, resultPath], {
+			const scratch = scratchDir("browser");
+			const step = await runStep(input.stepArgv?.browser ?? workerArgv("host-browser-worker"), {
 				cwd: packageRoot,
 				// The browsers are the trusted install's (the image bakes them in
-				// and names the directory); the step's HOME is its evidence directory.
+				// and names the directory); the step's HOME is its scratch directory.
 				env: {
-					HOME: dir,
-					TMPDIR: dir,
+					HOME: scratch,
+					TMPDIR: scratch,
 					PLAYWRIGHT_BROWSERS_PATH:
 						process.env.PLAYWRIGHT_BROWSERS_PATH ?? path.join(homedir(), ".cache", "ms-playwright"),
 				},
+				input: JSON.stringify(session),
+				report: { maxBytes: maxReportBytes },
 				timeoutMs: limits.hostCheckTimeoutMs,
 				identity: input.identity,
 			});
 			steps.browser = stepEvidence(step, input.identity);
 			if (!step.stop.confirmed) throw new CheckFailure("OBSERVER_FAILED", `the browser step's ${step.stop.error}`);
 			if (step.timedOut) throw new CheckFailure("DEADLINE_EXCEEDED", "the browser step exceeded its bound");
-			if (!existsSync(resultPath))
-				throw new CheckFailure(
-					"OBSERVER_FAILED",
-					`the browser step left no report (exit ${step.code}); an exit code certifies nothing`,
-				);
-			const report = JSON.parse(readFileSync(resultPath, "utf8")) as BrowserWorkerResult;
+			const report = stepReport<BrowserWorkerResult>(step, "browser step");
 			host.browser = report;
 			// What decides below is the worker's observation through Playwright
 			// (isolated world, its request log, real input, the captured control)

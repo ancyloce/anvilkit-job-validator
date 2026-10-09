@@ -86,14 +86,67 @@ export interface SourceRead {
 	files: Map<string, Buffer>;
 }
 
-/** A source defect: PATH_ESCAPE for the path rules, CANDIDATE_BUILD_FAILED for everything the profile cannot build. */
+/**
+ * A source defect: PATH_ESCAPE for the path rules, IDENTITY_MISMATCH for a
+ * declaration that is not the allocated identity, CANDIDATE_BUILD_FAILED for
+ * everything the profile cannot build.
+ */
 export class SourceError extends Error {
 	constructor(
-		readonly code: "PATH_ESCAPE" | "CANDIDATE_BUILD_FAILED",
+		readonly code: "PATH_ESCAPE" | "CANDIDATE_BUILD_FAILED" | "IDENTITY_MISMATCH",
 		message: string,
 	) {
 		super(message);
 	}
+}
+
+/**
+ * The identity a launch allocated to the component (P0.8, the launch
+ * envelope's component): the source's component.json must declare this
+ * componentId and puckType and its package.json this name. The candidate's
+ * own declaration never chooses what is certified (SEC-12).
+ */
+export interface ComponentIdentity {
+	componentId: string;
+	puckType: string;
+	packageName: string;
+}
+
+/**
+ * A launch's component (job.schema.json launchEnvelope.component): the
+ * source revision it binds, always, and the allocated identity whole or not
+ * at all — a generation names it from its frozen brief; a preview or release
+ * launch names the revision alone (no allocated identity is recorded for a
+ * lineage), and the source's own declaration then names the component.
+ */
+export type LaunchComponent = Partial<ComponentIdentity> & { sourceRevision: string };
+
+/** The allocated identity a launch component names, or undefined when it names the revision alone. */
+export function allocatedIdentity(c: LaunchComponent | undefined): ComponentIdentity | undefined {
+	if (c?.componentId === undefined || c.puckType === undefined || c.packageName === undefined) return undefined;
+	return { componentId: c.componentId, puckType: c.puckType, packageName: c.packageName };
+}
+
+/** Why a source read is not the allocated identity, or undefined when it is. */
+export function identityMismatch(
+	source: Pick<SourceRead, "declaration" | "packageName">,
+	want: ComponentIdentity,
+): string | undefined {
+	const got: ComponentIdentity = {
+		componentId: source.declaration.componentId,
+		puckType: source.declaration.puckType,
+		packageName: source.packageName,
+	};
+	const where = {
+		componentId: "component.json componentId",
+		puckType: "component.json puckType",
+		packageName: "package.json name",
+	};
+	for (const k of ["componentId", "puckType", "packageName"] as const) {
+		if (got[k] !== want[k])
+			return `${where[k]} is ${JSON.stringify(got[k])}, the allocated identity is ${JSON.stringify(want[k])}`;
+	}
+	return undefined;
 }
 
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
@@ -411,11 +464,18 @@ export function manifestDigest(files: Map<string, Buffer>): Digest {
 /**
  * Reads a complete source and computes its manifest. sourceRevision is
  * the content authority's revision of these bytes (the caller's, never the
- * candidate's); the digest is computed here from the bytes alone.
+ * candidate's); the digest is computed here from the bytes alone. With an
+ * identity, a declaration or package name that differs from it is refused
+ * (IDENTITY_MISMATCH) as soon as both documents are read.
  */
 export function readSource(
 	dir: string,
-	opts: { sourceRevision: string; profile: BuildSupportProfile; limits: ValidatorProfile["limits"] },
+	opts: {
+		sourceRevision: string;
+		profile: BuildSupportProfile;
+		limits: ValidatorProfile["limits"];
+		identity?: ComponentIdentity;
+	},
 ): SourceRead {
 	if (!/^(0|[1-9][0-9]{0,19})$/.test(opts.sourceRevision))
 		throw new SourceError("CANDIDATE_BUILD_FAILED", `source revision ${opts.sourceRevision} is not a sequence`);
@@ -430,6 +490,10 @@ export function readSource(
 	if (files.size === 0) throw new SourceError("CANDIDATE_BUILD_FAILED", "the source is empty");
 	const declaration = readDeclaration(files);
 	const pkg = readPackage(files, opts.profile);
+	if (opts.identity) {
+		const mismatch = identityMismatch({ declaration, packageName: pkg.name }, opts.identity);
+		if (mismatch) throw new SourceError("IDENTITY_MISMATCH", mismatch);
+	}
 	const lockfileDigest = checkLockfile(files, pkg.dependencies);
 
 	// Layout: every file has one reviewed place, and every declared item
