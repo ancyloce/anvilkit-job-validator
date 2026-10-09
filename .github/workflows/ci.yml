@@ -19,8 +19,8 @@ env:
   # launch envelope's component, the IDENTITY_MISMATCH and PROFILE_DISABLED
   # failure codes and the profile state/bindsSource fields, and
   # jobs/profiles.json with validator-fixture-v1 and validator-source(-dev)-v1
-  # (P0.8): set to the published commit before this workflow can pass.
-  CONTRACTS_REF: PENDING-CONTRACTS-COMMIT
+  # (P0.8): the published commit of tag go/v0.1.6.
+  CONTRACTS_REF: 7f509464b77acda9715d183a8a65dccea2f6a8f2
 jobs:
   node:
     runs-on: ubuntu-24.04
@@ -61,3 +61,4 @@ jobs:
           ref: ${{ env.CONTRACTS_REF }}
           path: .ci/contracts
       - run: docker build --build-context contracts=.ci/contracts -t anvilkit-validator:ci .
+      - run: sh tools/image-smoke.sh anvilkit-validator:ci
