@@ -47,8 +47,8 @@ FROM node:24.19.0-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930
 # findings had no fixed version there; perl-base is upgraded to the fixed
 # point release (CVE-2026-13221/42496/8376), pinned. libxml2's
 # CVE-2026-6653 has no fixed version in Debian 13; it arrives through
-# Chromium's libgbm1 -> mesa-libgallium -> libllvm19 and stays a recorded
-# finding. The Job runs node and the baked toolchain only: the base's
+# Chromium's libgbm1 -> mesa-libgallium -> libllvm19 and is removed below.
+# The Job runs node and the baked toolchain only: the base's
 # package managers (npm with its bundled tar, npx, corepack, yarn) are
 # removed, nothing installs at run time.
 RUN apt-get update \
@@ -83,6 +83,34 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/anvilkit/ms-playwright
 RUN ./node_modules/.bin/playwright install --with-deps --only-shell chromium \
  && rm -rf /var/lib/apt/lists/* \
  && chmod -R a+rX /anvilkit/ms-playwright
+# AC7 (P0.8): the headless shell links libgbm.so.1, which needs only libdrm,
+# libexpat, libm and libc, and renders through its bundled SwiftShader.
+# libgbm1 declares mesa-libgallium for its DRI backend (gbm/dri_gbm.so ->
+# libgallium -> libLLVM -> libxml2, CVE-2026-6653 without a fixed version in
+# Debian 13), which is loaded only for a DRM device the Job never has. The
+# installed libgbm1 is repacked from Debian's own .deb (verified by apt's
+# signed index) without that backend and that dependency, its version
+# suffixed +anvilkit1 (the same Mesa binary otherwise, still matched by
+# scanners at its Debian version); every package the headless shell's own
+# deb.deps names is kept (marked manual); then Xvfb and the GL stack (headed
+# browsers only), Mesa's gallium drivers, LLVM and libxml2 are purged with
+# what only they needed. dpkg stays consistent: later apt operations (the
+# team image) work. tools/image-smoke.sh certifies in the image afterwards.
+RUN set -eu; cd /tmp; apt-get update; \
+    v=$(dpkg-query -W -f='${Version}' libgbm1); \
+    apt-get download "libgbm1=$v"; dpkg-deb -R libgbm1_*.deb gbm; \
+    rm gbm/usr/lib/x86_64-linux-gnu/gbm/dri_gbm.so; rmdir gbm/usr/lib/x86_64-linux-gnu/gbm; \
+    sed -i '/gbm\/dri_gbm.so$/d' gbm/DEBIAN/md5sums; \
+    sed -i -e "s/^Version: .*/Version: $v+anvilkit1/" -e '/^Depends:/s/, mesa-libgallium ([^)]*)//' gbm/DEBIAN/control; \
+    if grep -q mesa-libgallium gbm/DEBIAN/control; then echo "libgbm1 still depends on mesa-libgallium" >&2; exit 1; fi; \
+    dpkg-deb -b gbm libgbm1-anvilkit.deb >/dev/null; dpkg -i libgbm1-anvilkit.deb; \
+    for d in $(sed -e 's/([^)]*)//g' -e 's/|/ /g' /anvilkit/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/deb.deps); do \
+      if dpkg-query -W -f='${Status}' "$d" 2>/dev/null | grep -q ' installed'; then apt-mark manual "$d" >/dev/null; fi; \
+    done; \
+    apt-get purge -y xvfb libgl1 libglx0 libglx-mesa0 libgl1-mesa-dri mesa-libgallium libllvm19 libxml2; \
+    apt-get autoremove -y --purge; apt-get check; \
+    if dpkg-query -W -f='${Status}\n' libxml2 libllvm19 mesa-libgallium 2>/dev/null | grep -q ' installed'; then echo "the Mesa chain is still installed" >&2; exit 1; fi; \
+    rm -rf /var/lib/apt/lists/* /tmp/*
 # The candidate identity reads the toolchain, the browser and the protected
 # host fixtures it executes (root-owned, unwritable; their digests are
 # pinned by the validator profile and rechecked before and after every run);
