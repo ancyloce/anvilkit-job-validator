@@ -34,7 +34,8 @@
       "PATH_ESCAPE",
       "PROTECTED_FIXTURE_ALTERED",
       "RESULT_DIGEST_MISMATCH",
-      "DEADLINE_EXCEEDED"
+      "DEADLINE_EXCEEDED",
+      "IDENTITY_MISMATCH"
     ],
     "infrastructure_failed": [
       "OBSERVER_FAILED",
@@ -50,7 +51,7 @@
     "fixtures/host/browser/host.tsx": "sha256:138885a64008ed5fb4dca78c704f4ad7c95480c49be98e46176123d82ae25668",
     "fixtures/host/browser/index.html": "sha256:95d146f87623c4828d5906169fc7ca122023c0d2def920630f9b1475f0bf7b6c",
     "fixtures/host/browser/observer.js": "sha256:07163377cccf7ddf5f539058bac95bf5e94d5c645d23982f6d020c3e0c8ba6ee",
-    "fixtures/host/ssr.mjs": "sha256:b5134b4e629d787a31f481188f9ab3fb7c9e03f44a6bbb733d3d2ad12e816c69"
+    "fixtures/host/ssr.mjs": "sha256:d4087c80440dee29820b322fd61c1ae6db34a1d981ecff86050b1b5b732bbde6"
   },
   "interaction": {
     "counterAttribute": "data-clicks",
@@ -66,5 +67,5 @@
     "buildTimeoutMs": 180000,
     "hostCheckTimeoutMs": 120000
   },
-  "profileDigest": "sha256:523fa78fbbc0a085edca0a2552c386dbba7d4713957d079c83e091448f030b66"
+  "profileDigest": "sha256:081e3249f2497e7fdee456b1a2c52ce17942b03f5536112de64105d485d378ab"
 }
