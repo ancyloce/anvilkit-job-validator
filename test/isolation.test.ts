@@ -1,9 +1,17 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { callerIdentity, runStep, scanProcesses, stepProcesses } from "../src/isolation.js";
-import { packageRoot } from "./helpers.js";
+import {
+	callerIdentity,
+	identityProcesses,
+	readStepOutput,
+	runStep,
+	type StepIdentity,
+	scanProcesses,
+	stepProcesses,
+} from "../src/isolation.js";
+import { packageRoot, rootGate } from "./helpers.js";
 
 const scratch: string[] = [];
 function dir(prefix: string): string {
@@ -108,6 +116,163 @@ describe("step stop and confirmation as the caller", () => {
 	});
 });
 
+describe("reading a step's output file", () => {
+	it("reads a regular file and refuses a FIFO, symbolic links, a device, a directory and an oversized file without blocking", () => {
+		const d = dir("anvilkit-read-");
+		const regular = path.join(d, "result.json");
+		writeFileSync(regular, '{"ok":true}');
+		expect(readStepOutput(regular, 1024).toString()).toBe('{"ok":true}');
+		expect(() => readStepOutput(regular, 4)).toThrow(/exceeds 4 bytes/);
+		const fifo = path.join(d, "fifo.json");
+		execFileSync("mkfifo", [fifo]);
+		const started = Date.now();
+		expect(() => readStepOutput(fifo, 1024)).toThrow(/not a regular file/);
+		expect(Date.now() - started).toBeLessThan(5_000);
+		const toRegular = path.join(d, "link.json");
+		symlinkSync(regular, toRegular);
+		expect(() => readStepOutput(toRegular, 1024)).toThrow(/not a regular file/);
+		const toDevice = path.join(d, "zero.json");
+		symlinkSync("/dev/zero", toDevice);
+		expect(() => readStepOutput(toDevice, 1024)).toThrow(/not a regular file/);
+		expect(() => readStepOutput("/dev/null", 1024)).toThrow(/not a regular file/);
+		expect(() => readStepOutput(d, 1024)).toThrow(/not a regular file/);
+	});
+});
+
+// VAL-05/AC6 from an ordinary, non-PID-1 parent (this test process): a step
+// under a setpriv identity leaves a detached process (double fork and
+// setsid), reparented outside this process's subtree, in its own session
+// and group. The group/session/descendant view that assumed a PID-1 parent
+// does not see it; the identity scan does, and the step's stop kills it
+// before runStep returns. The step UIDs are fresh, unused ones, so the
+// stop's kill of every process of those UIDs touches nothing else on this
+// host.
+const ac6 = rootGate(["/usr/bin/setpriv", "/usr/bin/setsid", "/bin/sh"]);
+
+function unusedUids(): [number, number] {
+	const used = new Set([...scanProcesses().values()].flatMap((p) => p.uids));
+	for (;;) {
+		const u = 2_100_000_000 + Math.floor(Math.random() * 1_000_000) * 2;
+		if (!used.has(u) && !used.has(u + 1)) return [u, u + 1];
+	}
+}
+
+describe.skipIf(ac6.skip)("step stop independent of PID 1 (setpriv identity, non-PID-1 parent)", () => {
+	it("terminates a detached setsid process the step left behind before the step's result is returned", async () => {
+		ac6.assert();
+		expect(process.pid).not.toBe(1);
+		const [candidate, harness] = unusedUids();
+		const identity: StepIdentity = {
+			mode: "setpriv",
+			uid: candidate,
+			gid: candidate,
+			harnessUid: harness,
+			harnessGid: harness,
+		};
+		const d = dir("anvilkit-ac6-");
+		chmodSync(d, 0o755);
+		const out = path.join(d, "out");
+		mkdirSync(out);
+		chmodSync(out, 0o1777);
+		// The leader records itself, leaves a detached sleeper in a new session
+		// whose parent exits at once, and lingers so the test can look at both.
+		const script = `echo $$ > ${out}/leader; (setsid sleep 600 & echo $! > ${out}/detached); sleep 2; exit 0`;
+		const running = runStep(["/bin/sh", "-c", script], { cwd: d, timeoutMs: 30_000, identity });
+		let pids: { leader: number; detached: number } | undefined;
+		for (let i = 0; i < 100 && !pids; i++) {
+			await new Promise((r) => setTimeout(r, 20));
+			try {
+				const leader = Number(readFileSync(path.join(out, "leader"), "utf8"));
+				const detached = Number(readFileSync(path.join(out, "detached"), "utf8"));
+				if (leader > 0 && detached > 0) pids = { leader, detached };
+			} catch {
+				// not yet
+			}
+		}
+		if (!pids) throw new Error("the step did not record its processes");
+		const procs = scanProcesses();
+		const sleeper = procs.get(pids.detached);
+		expect(sleeper?.uid).toBe(candidate);
+		expect(sleeper?.session).toBe(pids.detached);
+		// The parent-chain view (trusted process as PID 1) misses it; the identity scan finds it.
+		expect(stepProcesses(procs, { root: process.pid, leader: pids.leader }).map((p) => p.pid)).not.toContain(
+			pids.detached,
+		);
+		expect(identityProcesses(procs, [candidate, harness]).map((p) => p.pid)).toContain(pids.detached);
+		const result = await running;
+		expect(result.code).toBe(0);
+		expect(result.stop.reason).toBe("exited");
+		expect(result.stop.confirmed).toBe(true);
+		expect(result.stop.signaled).toBeGreaterThanOrEqual(1);
+		expect(alive(pids.detached)).toBe(false);
+		expect(identityProcesses(scanProcesses(), [candidate, harness])).toEqual([]);
+	});
+
+	it("runs the harness under its own UID, stopped and confirmed with the candidate's", async () => {
+		ac6.assert();
+		const [candidate, harness] = unusedUids();
+		const identity: StepIdentity = {
+			mode: "setpriv",
+			uid: candidate,
+			gid: candidate,
+			harnessUid: harness,
+			harnessGid: harness,
+		};
+		const d = dir("anvilkit-ac6-");
+		chmodSync(d, 0o755);
+		// The harness reports its own identity on the orchestrator's pipe and
+		// leaves a detached process of its UID behind.
+		const step = await runStep(["/bin/sh", "-c", "(setsid sleep 600 &); id -u >&3; id -g >&3"], {
+			cwd: d,
+			timeoutMs: 30_000,
+			identity,
+			runAs: "harness",
+			report: { maxBytes: 1024 },
+		});
+		expect(step.report?.bytes.toString().trim().split("\n")).toEqual([String(harness), String(harness)]);
+		expect(step.stop.confirmed).toBe(true);
+		expect(identityProcesses(scanProcesses(), [candidate, harness])).toEqual([]);
+		await expect(
+			runStep(["/bin/true"], {
+				cwd: d,
+				timeoutMs: 5_000,
+				identity: { ...identity, harnessUid: candidate },
+				runAs: "harness",
+			}),
+		).rejects.toThrow(/harness uid other than the candidate's/);
+	});
+});
+
+describe.skipIf(ac6.skip)("step UIDs that are not the validator's alone", () => {
+	it("refuses to start a step while a process of a step UID it did not start is alive", async () => {
+		ac6.assert();
+		const [candidate, harness] = unusedUids();
+		const identity: StepIdentity = {
+			mode: "setpriv",
+			uid: candidate,
+			gid: candidate,
+			harnessUid: harness,
+			harnessGid: harness,
+		};
+		const foreign = spawn(
+			"setpriv",
+			[`--reuid=${harness}`, `--regid=${harness}`, "--clear-groups", "--", "/bin/sleep", "600"],
+			{ stdio: "ignore" },
+		);
+		try {
+			for (let i = 0; i < 100 && identityProcesses(scanProcesses(), [harness]).length === 0; i++)
+				await new Promise((r) => setTimeout(r, 20));
+			await expect(runStep(["/bin/true"], { cwd: "/", timeoutMs: 5_000, identity })).rejects.toThrow(
+				/already run 1 process\(es\).*must be the validator's alone/,
+			);
+			// Nothing was signaled: the foreign process is untouched.
+			expect(alive(foreign.pid as number)).toBe(true);
+		} finally {
+			foreign.kill("SIGKILL");
+		}
+	});
+});
+
 // The Job's actual process topology and capability set: the trusted process
 // is PID 1 of its own PID namespace (unshare, as the container runtime
 // provides) running as UID 0 with SETUID, SETGID and SETPCAP only (setpriv,
@@ -115,19 +280,11 @@ describe("step stop and confirmation as the caller", () => {
 // through the validator's own setpriv drop. Without CAP_KILL the trusted
 // process cannot signal the steps; the stop must run as the step identity
 // and be confirmed from PID 1's read of /proc.
-const tools = {
-	root: process.getuid?.() === 0,
-	unshare: existsSync("/usr/bin/unshare"),
-	setpriv: existsSync("/usr/bin/setpriv"),
-};
-const skipReason = !tools.root
-	? "needs a root caller (UID 10001 steps)"
-	: !tools.unshare || !tools.setpriv
-		? "needs util-linux unshare and setpriv"
-		: "";
+const pid1 = rootGate(["/usr/bin/unshare", "/usr/bin/setpriv"]);
 
-describe.skipIf(skipReason !== "")("step stop under the Job's UID and capability set (PID 1, no CAP_KILL)", () => {
+describe.skipIf(pid1.skip)("step stop under the Job's UID and capability set (PID 1, no CAP_KILL)", () => {
 	it("stops and confirms after a normal leader exit and at the bound, leaving no survivor", () => {
+		pid1.assert();
 		// A world-readable stage: the compiled workers, this Node, the probe and
 		// the steps (UID 10001 cannot traverse a private home directory).
 		const stage = dir("anvilkit-stop-ns-");

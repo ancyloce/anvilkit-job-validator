@@ -155,6 +155,52 @@ describe("the protected build of the fixed source", () => {
 		await buildFails(dir, "CANDIDATE_BUILD_FAILED", /TS2322|not assignable/);
 	});
 
+	it("reads its result only from its pipe and its outputs only as regular files (no FIFO, no link, no hang)", async () => {
+		// A build step (through the test seam) that reports success on fd 3 but
+		// leaves a FIFO or a symbolic link where the orchestrator reads its
+		// artifacts, and a passing result file the orchestrator never reads.
+		const source = readSource(heroSource, opts);
+		const fake = (mode: string): string => {
+			const file = path.join(work(), "fake-build.mjs");
+			writeFileSync(
+				file,
+				`import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+const config = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const mode = ${JSON.stringify(mode)};
+mkdirSync(config.outDir + "/types", { recursive: true });
+writeFileSync(config.outDir + "/build-result.json", JSON.stringify({ ok: true, diagnostics: [], warnings: [], emitted: [] }));
+if (mode === "fifo") execFileSync("mkfifo", [config.outDir + "/index.js"]);
+else writeFileSync(config.outDir + "/index.js", "export default {};");
+if (mode === "link") symlinkSync("/etc/hostname", config.outDir + "/types/index.d.ts");
+else writeFileSync(config.outDir + "/types/index.d.ts", "export default {};");
+writeSync(3, JSON.stringify({ ok: true, diagnostics: [], warnings: [], emitted: [], chunk: { fileName: "index.js", imports: [], exports: ["default"], dynamicImports: [] } }));
+`,
+			);
+			return file;
+		};
+		for (const [mode, text] of [
+			["fifo", /index\.js: the build left a non-regular file/],
+			["link", /types\/index\.d\.ts: the build left a non-regular file/],
+			["result-file", /unexpected files: build-result\.json/],
+		] as const) {
+			const started = Date.now();
+			let err: unknown;
+			try {
+				await buildComponent(source, profiles, work(), {
+					identity: callerIdentity(),
+					workerArgv: [process.execPath, fake(mode)],
+				});
+			} catch (e) {
+				err = e;
+			}
+			expect(Date.now() - started, mode).toBeLessThan(30_000);
+			expect(err, mode).toBeInstanceOf(BuildError);
+			expect((err as BuildError).code, mode).toBe("CANDIDATE_BUILD_FAILED");
+			expect((err as BuildError).message, mode).toMatch(text);
+		}
+	});
+
 	it("does not let candidate configuration change the trusted rules", async () => {
 		// A tsconfig or rollup config in the source is refused by the source
 		// contract; the build itself takes its rules from the profile only,

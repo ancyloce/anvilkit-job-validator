@@ -71,6 +71,35 @@ describe("the fixed complete source", () => {
 	});
 });
 
+describe("the allocated identity (P0.8)", () => {
+	const allocated = { componentId: "cmp_hero_fixed", puckType: "Hero", packageName: "@anvilkit/hero-fixed" };
+	const refusal = (identity: typeof allocated): SourceError => {
+		try {
+			readSource(heroSource, { ...opts, identity });
+		} catch (err) {
+			expect(err).toBeInstanceOf(SourceError);
+			return err as SourceError;
+		}
+		throw new Error("not refused");
+	};
+
+	it("reads a source that declares the allocated identity", () => {
+		const read = readSource(heroSource, { ...opts, sourceRevision: "42", identity: allocated });
+		expect(read.manifest.sourceRevision).toBe("42");
+		expect(read.declaration.puckType).toBe("Hero");
+	});
+
+	it("refuses a declaration or package name that differs from it with IDENTITY_MISMATCH", () => {
+		const puck = refusal({ ...allocated, puckType: "Banner" });
+		expect(puck.code).toBe("IDENTITY_MISMATCH");
+		expect(puck.message).toMatch(/component\.json puckType is "Hero", the allocated identity is "Banner"/);
+		const name = refusal({ ...allocated, packageName: "@acme/hero" });
+		expect(name.code).toBe("IDENTITY_MISMATCH");
+		expect(name.message).toMatch(/package\.json name is "@anvilkit\/hero-fixed"/);
+		expect(refusal({ ...allocated, componentId: "cmp_other" }).code).toBe("IDENTITY_MISMATCH");
+	});
+});
+
 describe("source refusals", () => {
 	it("rejects a symbolic link that escapes the source", () => {
 		const dir = copy();

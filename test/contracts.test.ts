@@ -10,7 +10,7 @@ describe("contract validation of the Job's outputs", () => {
 		launchId: "lch_1",
 		attemptId: "att_1",
 		jobKind: "validator",
-		profileId: "validator-fixed-dev-v1",
+		profileId: "validator-source-dev-v1",
 		outputs: [
 			{
 				class: "npm",
@@ -48,23 +48,45 @@ describe("contract validation of the Job's outputs", () => {
 			}),
 		).toBeDefined();
 	});
-	it("validates a launch envelope and a build-support profile shape", () => {
+	it("names the identity refusal in a failed manifest", () => {
 		expect(
-			validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, {
-				schemaVersion: 1,
-				launchId: "lch_1",
-				launchKey: "validator-01j9abc",
-				operationId: "op_1",
-				attemptId: "att_1",
-				profileId: "validator-fixed-dev-v1",
-				profileRevision: "1",
-				jobKind: "validator",
-				executionEpoch: "1",
-				launchEpoch: "1",
-				deadline: "2026-09-16T12:00:00Z",
-				inputs: [],
+			validateAgainst(`${jobsSchemaId}#/$defs/resultManifest`, {
+				...base,
+				outputs: [],
+				verdict: "invalid",
+				failureCode: "IDENTITY_MISMATCH",
 			}),
 		).toBeUndefined();
+	});
+	it("validates a launch envelope, its allocated component identity and a build-support profile shape", () => {
+		const envelope = {
+			schemaVersion: 1,
+			launchId: "lch_1",
+			launchKey: "validator-01j9abc",
+			operationId: "op_1",
+			attemptId: "att_1",
+			profileId: "validator-fixture-v1",
+			profileRevision: "1",
+			jobKind: "validator",
+			executionEpoch: "1",
+			launchEpoch: "1",
+			deadline: "2026-09-16T12:00:00Z",
+			inputs: [],
+		};
+		const component = {
+			componentId: "cmp_hero_fixed",
+			puckType: "Hero",
+			packageName: "@anvilkit/hero-fixed",
+			sourceRevision: "42",
+		};
+		expect(validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, envelope)).toBeUndefined();
+		expect(validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, { ...envelope, component })).toBeUndefined();
+		// All four facts are required, and nothing else is accepted.
+		const { sourceRevision: _omitted, ...partial } = component;
+		expect(validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, { ...envelope, component: partial })).toBeDefined();
+		expect(
+			validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, { ...envelope, component: { ...component, extra: 1 } }),
+		).toBeDefined();
 		expect(validateAgainst(`${componentsSchemaId}#/$defs/buildSupportProfile`, { schemaVersion: 1 })).toBeDefined();
 	});
 	it("parses strictly: duplicate keys are refused", () => {

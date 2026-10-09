@@ -12,9 +12,8 @@ import type { BrowserObservation, BrowserWorkerResult } from "../src/host-browse
 import { callerIdentity } from "../src/isolation.js";
 import { loadProfiles, type Profiles, profileDigest, verifyToolchain } from "../src/profiles.js";
 import { readSource, type SourceRead } from "../src/source.js";
-import { writeTarball } from "../src/tarball.js";
 import { type Certification, certificationBinds, certify, stylesheetReferences, verdictFor } from "../src/validate.js";
-import { heroSource, packageRoot, scratchCopy } from "./helpers.js";
+import { forgedFiles, forgingModule, heroSource, mutatedBuild, packageRoot, scratchCopy } from "./helpers.js";
 
 type Callable<T> = T extends (...a: infer A) => infer R
 	? (...a: A) => R
@@ -45,29 +44,8 @@ beforeAll(async () => {
 });
 
 /** A copy of the build whose staged package may be mutated and repacked. */
-async function mutated(mutate: (packageDir: string) => void): Promise<BuildOutput> {
-	const dir = work();
-	cpSync(build.workDir, dir, { recursive: true, verbatimSymlinks: true });
-	const packageDir = path.join(dir, "stage", "package");
-	mutate(packageDir);
-	const files: string[] = [];
-	const walk = (d: string, rel = "") => {
-		for (const e of require("node:fs").readdirSync(d, { withFileTypes: true })) {
-			const p = rel ? `${rel}/${e.name}` : e.name;
-			if (e.isDirectory()) walk(path.join(d, e.name), p);
-			else files.push(p);
-		}
-	};
-	walk(packageDir);
-	const tarball = path.join(dir, path.basename(build.npm.file));
-	await writeTarball(path.join(dir, "stage"), files, tarball);
-	return {
-		...build,
-		workDir: dir,
-		packageDir,
-		npm: { ...build.npm, file: tarball },
-		browser: { ...build.browser, file: path.join(packageDir, "dist", "index.js") },
-	};
+function mutated(mutate: (packageDir: string) => void): Promise<BuildOutput> {
+	return mutatedBuild(build, work(), mutate);
 }
 
 function fails(cert: Certification, code: string, verdict: string, check: string): void {
@@ -152,6 +130,17 @@ describe("independent certification of the fixed component", () => {
 		expect(page.resolved.react).toBe("/host/react.js");
 		expect(cert.steps.ssr?.code).toBe(0);
 		expect(cert.steps.ssr?.stop).toEqual({ reason: "exited", confirmed: true, signaled: expect.any(Number) });
+		// The SSR harness judged the render in a step of its own, after the render child's stop.
+		expect(cert.steps.ssrHarness?.code).toBe(0);
+		expect(cert.steps.ssrHarness?.stop.confirmed).toBe(true);
+		// Chromium's sandbox is recorded either way; as root (the caller here, on
+		// a developer host) Chromium refuses it, and the report says so.
+		expect(typeof browser.chromiumSandbox?.enabled).toBe("boolean");
+		if (process.getuid?.() === 0)
+			expect(browser.chromiumSandbox).toEqual({
+				enabled: false,
+				reason: expect.stringMatching(/refuses its sandbox to root/),
+			});
 		expect(cert.steps.browser?.code).toBe(0);
 		expect(cert.steps.browser?.stop.confirmed).toBe(true);
 		expect(cert.steps.build.stop.confirmed).toBe(true);
@@ -418,7 +407,116 @@ export default config;
 		expect(cert.complete).toBe(false);
 	});
 
+	it("never certifies the VAL-01 reproduction: a throwing render whose module writes passing reports wherever it can", async () => {
+		// The reviewer's reproduction (VAL-01/B-20): the module keeps the static
+		// contract, its render throws, and at import it writes a fully passing
+		// SSR report, the rendered HTML files and a browser report into every
+		// directory it can reach (its HOME and TMPDIR and every directory of
+		// the work tree), under the names the old harness used. Nothing a step writes to a file is read as a report, so the
+		// throwing render is what the harness judges.
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), forgingModule("throw")));
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: false },
+		});
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
+		expect(cert.complete).toBe(false);
+		const ssr = cert.host.ssr as { ok?: boolean; errors?: string[] };
+		expect(ssr.ok).toBe(false);
+		expect((ssr.errors ?? []).join(" ")).toMatch(/candidate SSR failure/);
+		// The forgeries are there; they were never read.
+		const planted = forgedFiles(b.workDir);
+		expect(planted.filter((f) => f.endsWith("/ssr-result.json")).length).toBeGreaterThan(0);
+	});
+
+	it("never certifies a module that forges a render frame on its own descriptor and exits before rendering", async () => {
+		// Stronger than a file: the module also writes a complete render frame
+		// (both HTML strings with every default text) on the descriptors it
+		// inherited, the orchestrator's pipe included, and exits 0 at import.
+		// The frame is data of the candidate; it cannot carry the value the
+		// observer chose for this run's Puck render, which only a render with
+		// these props shows.
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), forgingModule("frame")));
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: false },
+		});
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
+		expect(cert.checks.find((c) => c.name === "ssr-render")?.detail).toMatch(/lacks the value the observer chose/);
+		expect(cert.steps.ssr?.code).toBe(0);
+	});
+
+	it("refuses FIFOs and symbolic links planted at the report paths without hanging", async () => {
+		// The module plants a FIFO and symbolic links (to /dev/zero and to a
+		// forged report) at every report name in every directory it can reach,
+		// then lets its render throw. No report path is ever opened, so nothing
+		// blocks and nothing planted is read.
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), forgingModule("plant")));
+		const started = Date.now();
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: false },
+		});
+		expect(Date.now() - started).toBeLessThan(60_000);
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
+		const planted = forgedFiles(b.workDir);
+		expect(planted.some((f) => f.endsWith("/ssr-result.json"))).toBe(true);
+	});
+
+	it("binds the allocated identity and the launch's source revision (IDENTITY_MISMATCH otherwise)", async () => {
+		const allocated = {
+			componentId: source.declaration.componentId,
+			puckType: source.declaration.puckType,
+			packageName: source.packageName,
+			sourceRevision: source.manifest.sourceRevision,
+		};
+		for (const [key, value] of [
+			["puckType", "Banner"],
+			["packageName", "@acme/other"],
+			["componentId", "other"],
+			["sourceRevision", "9"],
+		] as const) {
+			const cert = await certify({
+				source,
+				build,
+				profiles,
+				toolchain,
+				identity,
+				hostChecks: { ssr: false, browser: false },
+				component: { ...allocated, [key]: value },
+			});
+			fails(cert, "IDENTITY_MISMATCH", "invalid", "source-contract");
+			expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("not_run");
+		}
+		const bound = await certify({
+			source,
+			build,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: false, browser: false },
+			component: allocated,
+		});
+		expect(bound.checks.find((c) => c.name === "source-contract")?.status).toBe("pass");
+		expect(bound.bindings.sourceRevision).toBe(allocated.sourceRevision);
+	});
+
 	it("treats a forged exit 0 as no evidence", async () => {
+		// A harness that exits 0 without a report on the orchestrator's pipe is
+		// no observation; one that writes a passing report to a file is no
+		// observation either: no report is ever read from a file.
 		const noReport = await certify({
 			source,
 			build,
@@ -426,13 +524,18 @@ export default config;
 			toolchain,
 			identity,
 			hostChecks: { ssr: true, browser: false },
-			stepArgv: { ssr: [process.execPath, "-e", "process.exit(0)"] },
+			stepArgv: { ssrHarness: [process.execPath, "-e", "process.exit(0)"] },
 		});
 		fails(noReport, "OBSERVER_FAILED", "infrastructure_failed", "ssr-render");
-		const forged = path.join(work(), "forge.mjs");
+		expect(noReport.checks.find((c) => c.name === "ssr-render")?.detail).toMatch(/left no report/);
+		const forgeDir = work();
+		const forged = path.join(forgeDir, "forge.mjs");
 		writeFileSync(
 			forged,
-			'import { writeFileSync } from "node:fs"; writeFileSync(process.argv[3], JSON.stringify({ ok: true, moduleDigest: "sha256:forged", exports: ["Hero","config","default"], reactVersion: "19.3.0", directHtmlDigest: "x", puckHtmlDigest: "y" })); process.exit(0);',
+			`import { writeFileSync } from "node:fs";
+const report = JSON.stringify({ ok: true, moduleDigest: ${JSON.stringify(build.browser.digest)}, exports: ["Hero","config","default"], fields: ["align","ctaLabel","subtitle","title"], reactVersion: "19.3.0", directHtmlDigest: "sha256:x", puckHtmlDigest: "sha256:y" });
+writeFileSync(${JSON.stringify(path.join(forgeDir, "ssr-result.json"))}, report);
+process.exit(0);`,
 		);
 		const forgedReport = await certify({
 			source,
@@ -441,10 +544,23 @@ export default config;
 			toolchain,
 			identity,
 			hostChecks: { ssr: true, browser: false },
-			stepArgv: { ssr: [process.execPath, forged] },
+			stepArgv: { ssrHarness: [process.execPath, forged] },
 		});
 		fails(forgedReport, "OBSERVER_FAILED", "infrastructure_failed", "ssr-render");
-		expect(forgedReport.steps.ssr?.code).toBe(0);
+		expect(forgedReport.steps.ssrHarness?.code).toBe(0);
+		// The render child is the candidate's side: one that exits 0 without
+		// a frame is a candidate whose render never completed.
+		const noRender = await certify({
+			source,
+			build,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: false },
+			stepArgv: { ssrRender: [process.execPath, "-e", "process.exit(0)"] },
+		});
+		fails(noRender, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
+		expect(noRender.steps.ssr?.code).toBe(0);
 	});
 
 	it("fails a candidate that renders nothing in the browser and fabricates a success report", async () => {
@@ -458,7 +574,7 @@ export function Hero() { return null; }
 export const config = {
 	fields: { title: { type: "text" }, subtitle: { type: "textarea" }, align: { type: "radio" }, ctaLabel: { type: "text" } },
 	defaultProps: { title: texts[0], subtitle: texts[1], align: "left", ctaLabel: texts[2] },
-	render: () => (typeof document === "undefined" ? createElement("section", { className: "ak-hero" }, ...texts.map((t) => createElement("p", null, t))) : null),
+	render: (p) => (typeof document === "undefined" ? createElement("section", { className: "ak-hero" }, ...[p.title, p.subtitle, p.ctaLabel].map((t) => createElement("p", null, t))) : null),
 };
 if (typeof window !== "undefined") {
 	const result = { ok: true, errors: [], exports: ["Hero", "config", "default"], fields: ["align", "ctaLabel", "subtitle", "title"], renderers: ["19.3.0"], resolved: { react: "/host/react.js", "react/jsx-runtime": "/host/react-jsx-runtime.js", "react-dom": "/host/react-dom.js", "react-dom/client": "/host/react-dom-client.js", "@puckeditor/core": "/host/puck.js" }, rootHtmlLength: 512, elementCount: 5, textPresent: Object.fromEntries(texts.map((t) => [t, true])), stylesheets: [{ href: "/candidate/dist/styles/hero.css", rules: 6, matchedRules: 6, resources: [{ url: "/candidate/dist/assets/mark.svg", loaded: true }] }], interaction: { clicked: true, changed: true } };
