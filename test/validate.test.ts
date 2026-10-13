@@ -851,3 +851,83 @@ export default config;
 		expect(verdictFor(profiles, "CANCELED")).toBe("canceled");
 	});
 });
+
+describe("P2.4: the component's own interaction declaration", () => {
+	/** A copy of the fixture rewritten into another component with its own counter attribute. */
+	function component(edit: (dir: string) => void): string {
+		const { dir } = scratchCopy(heroSource, "anvilkit-validator-p24-");
+		scratch.push(dir);
+		edit(dir);
+		return dir;
+	}
+	function rewrite(file: string, pairs: [string, string][]): void {
+		let text = readFileSync(file, "utf8");
+		for (const [from, to] of pairs) text = text.split(from).join(to);
+		writeFileSync(file, text);
+	}
+	function banner(dir: string, declared: string): void {
+		for (const f of ["src/hero.tsx", "src/index.tsx"])
+			rewrite(path.join(dir, f), [
+				["HeroProps", "BannerProps"],
+				["Hero", "Banner"],
+				["data-clicks", "data-taps"],
+			]);
+		rewrite(path.join(dir, "component.json"), [
+			['"componentId": "cmp_hero_fixed"', '"componentId": "cmp_banner_fixed"'],
+			['"puckType": "Hero"', '"puckType": "Banner"'],
+			['"counterAttribute": "data-clicks"', `"counterAttribute": "${declared}"`],
+		]);
+		rewrite(path.join(dir, "package.json"), [["@anvilkit/hero-fixed", "@anvilkit/banner-fixed"]]);
+	}
+
+	it("certifies a non-Hero component against the interaction it declares", async () => {
+		const dir = component((d) => banner(d, "data-taps"));
+		const src = readSource(dir, opts);
+		expect(src.declaration.puckType).toBe("Banner");
+		expect(src.declaration.interaction).toEqual({ counterAttribute: "data-taps", increment: 1 });
+		const b = await buildComponent(src, profiles, work(), { identity });
+		const cert = await certify({
+			source: src,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: true },
+		});
+		expect(cert.checks.filter((c) => c.status !== "pass").map((c) => `${c.name}:${c.detail}`)).toEqual([]);
+		expect(cert.verdict).toBe("certified");
+		const observed = (cert.host.browser as BrowserWorkerResult).observed as BrowserObservation;
+		expect(observed.interaction.counterAttribute).toBe("data-taps");
+		expect(observed.interaction.transitioned).toBe(true);
+	});
+
+	it("fails a component whose declared interaction it does not satisfy", async () => {
+		const dir = component((d) => banner(d, "data-presses"));
+		const src = readSource(dir, opts);
+		const b = await buildComponent(src, profiles, work(), { identity });
+		const cert = await certify({
+			source: src,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: false, browser: true },
+		});
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "browser-host");
+	});
+
+	it("bounds the declaration: a data-* attribute and a positive integer only", () => {
+		for (const [name, value] of [
+			["a CSS selector", '{ "counterAttribute": "button[onclick]", "increment": 1 }'],
+			["a non-data attribute", '{ "counterAttribute": "onclick", "increment": 1 }'],
+			["a zero increment", '{ "counterAttribute": "data-clicks", "increment": 0 }'],
+			["a fractional increment", '{ "counterAttribute": "data-clicks", "increment": 1.5 }'],
+			["an unknown key", '{ "counterAttribute": "data-clicks", "increment": 1, "script": "x" }'],
+		] as const) {
+			const dir = component((d) =>
+				rewrite(path.join(d, "component.json"), [['{ "counterAttribute": "data-clicks", "increment": 1 }', value]]),
+			);
+			expect(() => readSource(dir, opts), name).toThrow(/component.json: interaction/);
+		}
+	});
+});
