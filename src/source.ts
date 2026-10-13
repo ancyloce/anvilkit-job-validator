@@ -54,7 +54,21 @@ export interface ComponentDeclaration {
 	resources: string[];
 	usage: string;
 	editableFields: EditableField[];
+	/**
+	 * The component's own interaction contract (P2.4, reviewed and bounded by
+	 * this trusted reader): a real click on the component's button carrying
+	 * the counter attribute must advance it by `increment`. Absent: no
+	 * interaction outcome is required of the component.
+	 */
+	interaction?: InteractionDeclaration;
 }
+
+export interface InteractionDeclaration {
+	counterAttribute: string;
+	increment: number;
+}
+
+const counterAttributePattern = /^data-[a-z][a-z0-9-]{0,40}$/;
 
 export interface FileEntry {
 	path: string;
@@ -299,7 +313,8 @@ function readDeclaration(files: Map<string, Buffer>): ComponentDeclaration {
 	for (const k of required)
 		if (!keys.has(k)) throw new SourceError("CANDIDATE_BUILD_FAILED", `component.json: ${k} is required`);
 	for (const k of keys)
-		if (!required.includes(k)) throw new SourceError("CANDIDATE_BUILD_FAILED", `component.json: unknown field ${k}`);
+		if (!required.includes(k) && k !== "interaction")
+			throw new SourceError("CANDIDATE_BUILD_FAILED", `component.json: unknown field ${k}`);
 	if (doc.schemaVersion !== 1)
 		throw new SourceError("CANDIDATE_BUILD_FAILED", "component.json: schemaVersion must be 1");
 	const str = (k: string, re: RegExp): string => {
@@ -340,7 +355,7 @@ function readDeclaration(files: Map<string, Buffer>): ComponentDeclaration {
 		if ("default" in field) out.default = field.default;
 		return out;
 	});
-	return {
+	const declaration: ComponentDeclaration = {
 		schemaVersion: 1,
 		componentId: str("componentId", idPattern),
 		puckType: str("puckType", puckTypePattern),
@@ -350,6 +365,31 @@ function readDeclaration(files: Map<string, Buffer>): ComponentDeclaration {
 		usage: str("usage", /^[A-Za-z0-9_-]+\.md$/),
 		editableFields,
 	};
+	if ("interaction" in doc) declaration.interaction = readInteraction(doc.interaction);
+	return declaration;
+}
+
+// readInteraction bounds the component's interaction declaration: one
+// data-* counter attribute (an attribute selector, never arbitrary CSS or
+// script) and a positive integer increment.
+function readInteraction(v: unknown): InteractionDeclaration {
+	if (!v || typeof v !== "object" || Array.isArray(v))
+		throw new SourceError("CANDIDATE_BUILD_FAILED", "component.json: interaction must be an object");
+	const i = v as Record<string, unknown>;
+	for (const k of Object.keys(i))
+		if (k !== "counterAttribute" && k !== "increment")
+			throw new SourceError("CANDIDATE_BUILD_FAILED", `component.json: interaction: unknown ${k}`);
+	if (typeof i.counterAttribute !== "string" || !counterAttributePattern.test(i.counterAttribute))
+		throw new SourceError(
+			"CANDIDATE_BUILD_FAILED",
+			"component.json: interaction.counterAttribute must be a data-* attribute name",
+		);
+	if (typeof i.increment !== "number" || !Number.isInteger(i.increment) || i.increment < 1 || i.increment > 1000)
+		throw new SourceError(
+			"CANDIDATE_BUILD_FAILED",
+			"component.json: interaction.increment must be an integer in [1, 1000]",
+		);
+	return { counterAttribute: i.counterAttribute, increment: i.increment };
 }
 
 function readPackage(

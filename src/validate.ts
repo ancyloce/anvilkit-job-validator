@@ -782,7 +782,9 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				defaultProps,
 				expectedTexts,
 				nonceField,
-				interaction: profiles.validator.interaction ?? null,
+				// P2.4: the component's own declared interaction, read and
+				// bounded by the trusted source reader (never the profile's).
+				interaction: decl.interaction ?? null,
 				timeoutMs: Math.max(5_000, limits.hostCheckTimeoutMs - 10_000),
 				// Chromium's own sandbox around the renderer that runs the
 				// candidate module (G-04): a qualified profile requires it; the
@@ -862,12 +864,12 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					"CANDIDATE_TEST_FAILED",
 					`the host's React did not render the observer's ${session.nonceField} through Puck's Render`,
 				);
-			// The defined interaction outcome (fixed fixture): a real click must
-			// advance the counter attribute by the required amount. An empty
-			// onClick or a missing state transition leaves it unchanged and fails
-			// here; this is required only when the profile names a counter
-			// attribute, so it never demands that every component's click change
-			// the DOM.
+			// The declared interaction outcome (P2.4): a real click must
+			// advance the component's declared counter attribute by its declared
+			// amount. An empty onClick or a missing state transition leaves it
+			// unchanged and fails here; it is required only of a component that
+			// declares one, so it never demands that every component's click
+			// change the DOM.
 			if (session.interaction) {
 				const i = observed.interaction;
 				if (i.buttons === 0)
