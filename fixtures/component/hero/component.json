@@ -11,5 +11,6 @@
     { "name": "subtitle", "type": "textarea", "default": "A reviewed fixed component: complete source, protected build, independent verdict." },
     { "name": "align", "type": "radio", "default": "left" },
     { "name": "ctaLabel", "type": "text", "default": "Get started" }
-  ]
+  ],
+  "interaction": { "counterAttribute": "data-clicks", "increment": 1 }
 }
