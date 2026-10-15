@@ -21,6 +21,8 @@ env:
   # jobs/profiles.json with validator-fixture-v1 and validator-source(-dev)-v1
   # (P0.8): the published commit of tag go/v0.1.10.
   CONTRACTS_REF: 1c3ef955b34f7a28e0ba1aabd7a275d030bf2236
+permissions:
+  contents: read
 jobs:
   node:
     runs-on: ubuntu-24.04
@@ -30,13 +32,13 @@ jobs:
       # beside the contracts checkout (.ci is outside the image's context).
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.ci/ms-playwright
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ancyloce/anvilkit-agent-contracts
           ref: ${{ env.CONTRACTS_REF }}
           path: .ci/contracts
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.19.0"
       - run: npm install -g pnpm@12.3.4
@@ -56,8 +58,8 @@ jobs:
   image:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ancyloce/anvilkit-agent-contracts
           ref: ${{ env.CONTRACTS_REF }}
