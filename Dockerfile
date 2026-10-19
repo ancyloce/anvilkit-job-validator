@@ -45,7 +45,9 @@ RUN node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const p=d.
 FROM node:24.19.0-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930bdfa482de99fcdfa3b3de
 # Debian 13 (P0.8, AC7): bookworm's sqlite, zlib, glib and perl-base
 # findings had no fixed version there; perl-base is upgraded to the fixed
-# point release (CVE-2026-13221/42496/8376), pinned. libxml2's
+# point release (CVE-2026-13221/42496/8376), pinned, and so are the base's
+# gzip (CVE-2026-41992), libpcre2 (CVE-2026-86145/89157/89161/103111) and
+# SQLite (CVE-2026-11822/11824) fixes. libxml2's
 # CVE-2026-6653 has no fixed version in Debian 13; it arrives through
 # Chromium's libgbm1 -> mesa-libgallium -> libllvm19 and is removed below.
 # The Job runs node and the baked toolchain only: the base's
@@ -54,6 +56,7 @@ FROM node:24.19.0-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux ca-certificates \
  && apt-get install -y --no-install-recommends --only-upgrade perl-base=5.40.1-6+deb13u1 \
+      gzip=1.13-1+deb13u1 libpcre2-8-0=10.46-1~deb13u3 libsqlite3-0=3.46.1-7+deb13u2 \
  && rm -rf /var/lib/apt/lists/* \
  && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
       /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
