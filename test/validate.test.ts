@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import commonjsPlugin from "@rollup/plugin-commonjs";
@@ -13,7 +13,15 @@ import { callerIdentity } from "../src/isolation.js";
 import { loadProfiles, type Profiles, profileDigest, verifyToolchain } from "../src/profiles.js";
 import { readSource, type SourceRead } from "../src/source.js";
 import { type Certification, certificationBinds, certify, stylesheetReferences, verdictFor } from "../src/validate.js";
-import { forgedFiles, forgingModule, heroSource, mutatedBuild, packageRoot, scratchCopy } from "./helpers.js";
+import {
+	forgedFiles,
+	forgingModule,
+	heroSource,
+	mutatedBuild,
+	packageRoot,
+	removeTree,
+	scratchCopy,
+} from "./helpers.js";
 
 type Callable<T> = T extends (...a: infer A) => infer R
 	? (...a: A) => R
@@ -33,7 +41,7 @@ function work(): string {
 	return dir;
 }
 afterAll(() => {
-	for (const d of scratch) rmSync(d, { recursive: true, force: true });
+	for (const d of scratch) removeTree(d);
 });
 
 let source: SourceRead;

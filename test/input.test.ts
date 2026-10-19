@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import * as tar from "tar";
 import { afterEach, describe, expect, it } from "vitest";
 import { InputError, unpackSourceArchive } from "../src/input.js";
+import { removeTree } from "./helpers.js";
 
 const limits = { maxSourceFiles: 8, maxSourceFileBytes: 1024, maxSourceBytes: 4096 };
 
@@ -21,7 +22,7 @@ describe("the source input of a launch (P13-04)", () => {
 		return d;
 	};
 	afterEach(() => {
-		for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+		for (const d of dirs.splice(0)) removeTree(d);
 	});
 
 	it("unpacks regular files under normalized relative paths", async () => {

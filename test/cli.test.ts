@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { heroSource, packageRoot } from "./helpers.js";
+import { heroSource, packageRoot, removeTree } from "./helpers.js";
 
 const scratch: string[] = [];
 function out(): string {
@@ -12,7 +12,7 @@ function out(): string {
 	return d;
 }
 afterAll(() => {
-	for (const d of scratch) rmSync(d, { recursive: true, force: true });
+	for (const d of scratch) removeTree(d);
 });
 
 function certify(args: string[]): { status: number | null; stdout: string; stderr: string } {

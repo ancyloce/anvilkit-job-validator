@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,29 @@ export function scratchCopy(source: string, prefix = "anvilkit-validator-"): { d
 	const base = process.env.ANVILKIT_VALIDATOR_SCRATCH ?? tmpdir();
 	const dir = mkdtempSync(path.join(base, prefix));
 	cpSync(source, dir, { recursive: true });
-	return { dir, dispose: () => rmSync(dir, { recursive: true, force: true }) };
+	return { dir, dispose: () => removeTree(dir) };
+}
+
+/**
+ * Removes a tree the build left read-only (0o555 directories, 0o444 files):
+ * every directory is made writable first, which root does not need but any
+ * other user does (the parent's static chain runs the suite unprivileged).
+ * Symbolic links are not followed.
+ */
+export function removeTree(dir: string): void {
+	const open = (d: string) => {
+		try {
+			chmodSync(d, 0o755);
+		} catch {
+			return;
+		}
+		for (const e of readdirSync(d, { withFileTypes: true })) {
+			const p = path.join(d, e.name);
+			if (e.isDirectory() && !lstatSync(p).isSymbolicLink()) open(p);
+		}
+	};
+	if (existsSync(dir)) open(dir);
+	rmSync(dir, { recursive: true, force: true });
 }
 
 /**

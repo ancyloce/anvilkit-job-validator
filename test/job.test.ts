@@ -1,14 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-	chmodSync,
-	chownSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, chownSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,7 +7,7 @@ import * as tar from "tar";
 import { afterAll, describe, expect, it } from "vitest";
 import { contractsDir } from "../src/contracts.js";
 import { type Envelope, jobProfile, LaunchRefusal, main, type SourceSelection, selectSource } from "../src/job.js";
-import { heroSource, rootGate } from "./helpers.js";
+import { heroSource, removeTree, rootGate } from "./helpers.js";
 
 const scratch: string[] = [];
 function dir(prefix: string): string {
@@ -25,7 +16,7 @@ function dir(prefix: string): string {
 	return d;
 }
 afterAll(() => {
-	for (const d of scratch) rmSync(d, { recursive: true, force: true });
+	for (const d of scratch) removeTree(d);
 });
 
 const digest = (b: Buffer) => `sha256:${createHash("sha256").update(b).digest("hex")}`;

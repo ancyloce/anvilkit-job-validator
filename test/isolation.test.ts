@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -11,7 +11,7 @@ import {
 	scanProcesses,
 	stepProcesses,
 } from "../src/isolation.js";
-import { packageRoot, rootGate } from "./helpers.js";
+import { packageRoot, removeTree, rootGate } from "./helpers.js";
 
 const scratch: string[] = [];
 function dir(prefix: string): string {
@@ -20,7 +20,7 @@ function dir(prefix: string): string {
 	return d;
 }
 afterAll(() => {
-	for (const d of scratch) rmSync(d, { recursive: true, force: true });
+	for (const d of scratch) removeTree(d);
 });
 
 // A step that starts a child of its own (same session, inherits nothing but

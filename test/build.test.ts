@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,7 +6,7 @@ import { BuildError, buildComponent } from "../src/build.js";
 import { callerIdentity } from "../src/isolation.js";
 import { loadProfiles } from "../src/profiles.js";
 import { readSource } from "../src/source.js";
-import { heroSource, scratchCopy } from "./helpers.js";
+import { heroSource, removeTree, scratchCopy } from "./helpers.js";
 
 const profiles = loadProfiles();
 const opts = { sourceRevision: "1", profile: profiles.build, limits: profiles.validator.limits };
@@ -16,7 +16,7 @@ afterEach(() => {
 });
 function work(): string {
 	const dir = mkdtempSync(path.join(tmpdir(), "anvilkit-build-"));
-	disposers.push(() => rmSync(dir, { recursive: true, force: true }));
+	disposers.push(() => removeTree(dir));
 	return dir;
 }
 function copy(): string {
