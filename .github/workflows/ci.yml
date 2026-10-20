@@ -20,7 +20,7 @@ env:
   # failure codes and the profile state/bindsSource fields, and
   # jobs/profiles.json with validator-fixture-v1 and validator-source(-dev)-v1
   # (P0.8): the published commit of tag go/v0.1.10.
-  CONTRACTS_REF: 8727513577e2723ebd7c40439e094da1cd5ad88d
+  CONTRACTS_REF: 634d6495a06307a7d80901f0ea878ba7eaff1529
 permissions:
   contents: read
 jobs:
