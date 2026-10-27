@@ -13,3 +13,15 @@ allowBuilds:
   esbuild: false
 minimumReleaseAgeExclude:
   - '@types/node@24.13.5'
+# happy-dom 21.0.4 fixes GHSA-834v-8h66-3h79 / CVE-2026-115895 (HIGH: an
+# unsanitized import alias leads to host code execution; affected >= 17.0.0,
+# <= 21.0.3, no 20.x fix), found by the job-images publication scan on
+# 2026-10-26. It arrives through @puckeditor/core 0.23.0 (declares ^20.0.10)
+# and @tiptap/html (peer ^20.8.9); no stable Puck release moves past it yet.
+# This image renders untrusted component code, so the override is not
+# optional. Remove it once Puck and @tiptap/html allow a fixed release.
+overrides:
+  happy-dom: 21.0.4
+peerDependencyRules:
+  allowedVersions:
+    happy-dom: '21'
