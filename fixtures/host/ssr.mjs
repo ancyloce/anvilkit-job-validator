@@ -58,6 +58,14 @@ function firstLines(err) {
 	return String(err?.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err);
 }
 
+// react-dom/server escapes these five characters in text and attribute values,
+// so a declared text appears in the rendered HTML in this form ("We'll" is
+// "We&#x27;ll"); the judge looks for that form, not the raw text.
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" };
+function asRenderedHtml(text) {
+	return text.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
+}
+
 // The render child: candidate code runs here, with no path to the harness's
 // report and no file the orchestrator reads.
 async function renderChild(io) {
@@ -149,10 +157,12 @@ function judge(io) {
 			);
 		}
 		for (const text of io.expectedTexts ?? []) {
-			if (!direct.includes(text)) throw new Error(`rendered HTML lacks the default text ${JSON.stringify(text)}`);
+			if (!direct.includes(asRenderedHtml(text)))
+				throw new Error(`rendered HTML lacks the default text ${JSON.stringify(text)}`);
 		}
 		for (const text of io.puckExpectedTexts ?? []) {
-			if (!puck.includes(text)) throw new Error(`Puck's render lacks the default text ${JSON.stringify(text)}`);
+			if (!puck.includes(asRenderedHtml(text)))
+				throw new Error(`Puck's render lacks the default text ${JSON.stringify(text)}`);
 		}
 		if (io.nonce && !puck.includes(io.nonce))
 			throw new Error("Puck's render lacks the value the observer chose for the render (no render with these props)");
