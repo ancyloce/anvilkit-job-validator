@@ -477,13 +477,20 @@ function judge(io) {
 				`fields [${(result.fields ?? []).join(", ")}] differ from the declared editable fields [${wantFields.join(", ")}]`,
 			);
 		}
+		// The observer names the field that owns each default and the remedy
+		// (DEC-043); both are its data, appended to the judge's own sentence.
+		const owner = (text) => {
+			const f = io.defaultFields && typeof io.defaultFields === "object" ? io.defaultFields[text] : undefined;
+			return typeof f === "string" && f ? ` of the ${f}` : "";
+		};
+		const remedy = typeof io.remedy === "string" && io.remedy ? `; ${io.remedy}` : "";
 		for (const text of io.expectedTexts ?? []) {
 			if (!direct.includes(asRenderedHtml(text)))
-				throw new Error(`rendered HTML lacks the default text ${JSON.stringify(text)}`);
+				throw new Error(`rendered HTML lacks the default text ${JSON.stringify(text)}${owner(text)}${remedy}`);
 		}
 		for (const text of io.puckExpectedTexts ?? []) {
 			if (!puck.includes(asRenderedHtml(text)))
-				throw new Error(`Puck's render lacks the default text ${JSON.stringify(text)}`);
+				throw new Error(`Puck's render lacks the default text ${JSON.stringify(text)}${owner(text)}${remedy}`);
 		}
 		if (io.nonce && !puck.includes(io.nonce))
 			throw new Error("Puck's render lacks the value the observer chose for the render (no render with these props)");
