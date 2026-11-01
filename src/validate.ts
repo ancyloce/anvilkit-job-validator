@@ -640,6 +640,18 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 		(f) => (f.type === "text" || f.type === "textarea") && typeof f.default === "string",
 	);
 	const expectedTexts = textFields.filter((f) => (f.default as string).length > 0).map((f) => f.default as string);
+	// Which declared field owns each expected default, and what the source must do
+	// instead (DEC-043, after B1 run 12): a failure names the field and the remedy,
+	// so a repair round can act on it, not only on the symptom.
+	const defaultFields: Record<string, string> = {};
+	for (const text of new Set(expectedTexts)) {
+		const owners = textFields.filter((f) => f.default === text).map((f) => `${f.type} field ${f.name}`);
+		defaultFields[text] = owners.join(" and the ");
+	}
+	const renderedDefaultRemedy =
+		"every non-empty text or textarea default is visible text of the component on the first render: " +
+		"a URL, colour, identifier or other non-display value takes an empty default and a constant fallback in code, " +
+		"and an aria-label, title, alt or placeholder value is a constant (C16)";
 	// The field the observer renders with a value of its own (the Puck render
 	// of the SSR check, the browser's re-render): the first declared text
 	// field; a component without one has nothing to show.
@@ -740,6 +752,8 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					moduleDigest,
 					fieldNames,
 					expectedTexts,
+					defaultFields,
+					remedy: renderedDefaultRemedy,
 					puckExpectedTexts: textFields
 						.filter((f) => f.name !== nonceField && (f.default as string).length > 0)
 						.map((f) => f.default as string),
@@ -922,7 +936,10 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				.filter(([, ok]) => !ok)
 				.map(([t]) => t);
 			if (missingText.length)
-				throw new CheckFailure("CANDIDATE_TEST_FAILED", `the rendered text lacks ${JSON.stringify(missingText[0])}`);
+				throw new CheckFailure(
+					"CANDIDATE_TEST_FAILED",
+					`the rendered text lacks ${JSON.stringify(missingText[0])}${defaultFields[missingText[0] as string] ? `, the default of the ${defaultFields[missingText[0] as string]}` : ""}; ${renderedDefaultRemedy}`,
+				);
 			if (session.nonceField && !observed.nonce.rendered)
 				throw new CheckFailure(
 					"CANDIDATE_TEST_FAILED",
