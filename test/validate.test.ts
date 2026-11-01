@@ -17,6 +17,7 @@ import {
 	forgedFiles,
 	forgingModule,
 	heroSource,
+	heroTexts,
 	mutatedBuild,
 	packageRoot,
 	removeTree,
@@ -533,6 +534,52 @@ export default config;
 			"a select or radio value reaches an inline style only after it matches one of the field's options",
 		);
 		expect(sinkDetail(cert)).not.toContain("with every text field");
+	});
+
+	// DEC-043 (B1 run 12): a default that is not visible text fails with the
+	// owning field and the remedy, under SSR and in the browser alike.
+	const remedyText =
+		"a URL, colour, identifier or other non-display value takes an empty default and a constant fallback in code";
+	it("names the field and the remedy when a default is missing from the SSR render", async () => {
+		const module = sinkModule("checked").replace('h("p", { className: "ak-hero__subtitle" }, subtitle),', "null,");
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), module));
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: false },
+		});
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
+		const detail = cert.checks.find((c) => c.name === "ssr-render")?.detail ?? "";
+		expect(detail).toContain(
+			`rendered HTML lacks the default text ${JSON.stringify(heroTexts[1])} of the textarea field subtitle;`,
+		);
+		expect(detail).toContain(remedyText);
+	});
+
+	it("names the field and the remedy when a default is only in an attribute (the browser's visible text, B1 run 12)", async () => {
+		const module = sinkModule("checked").replace(
+			'h("p", { className: "ak-hero__subtitle" }, subtitle),',
+			'h("p", { className: "ak-hero__subtitle", title: subtitle }, "\u00a0"),',
+		);
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), module));
+		const cert = await certify({
+			source,
+			build: b,
+			profiles,
+			toolchain,
+			identity,
+			hostChecks: { ssr: true, browser: true },
+		});
+		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("pass");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "browser-host");
+		const detail = cert.checks.find((c) => c.name === "browser-host")?.detail ?? "";
+		expect(detail).toContain(
+			`the rendered text lacks ${JSON.stringify(heroTexts[1])}, the default of the textarea field subtitle;`,
+		);
+		expect(detail).toContain(remedyText);
 	});
 
 	it("refuses FIFOs and symbolic links planted at the report paths without hanging", async () => {

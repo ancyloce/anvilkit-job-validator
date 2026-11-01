@@ -72,6 +72,16 @@ describe("the SSR judge's default-text match (B1 run 5, C1)", () => {
 		expect(verdict.ok).toBe(false);
 		expect(verdict.errors).toEqual([`rendered HTML lacks the default text "We'll be back soon."`]);
 	});
+
+	it("names the field that owns the missing default and the remedy the observer hands over (DEC-043)", async () => {
+		const remedy =
+			"every non-empty text or textarea default is visible text of the component on the first render (C16)";
+		const io = { ...inputs("Something else", "/terms"), defaultFields: { "/terms": "text field linkHref" }, remedy };
+		const verdict = await judge(io);
+		expect(verdict.errors).toEqual([
+			`rendered HTML lacks the default text "/terms" of the text field linkHref; ${remedy}`,
+		]);
+	});
 });
 
 describe("the SSR judge's field sinks (the field-sinks check; B1 run 10's security review)", () => {
