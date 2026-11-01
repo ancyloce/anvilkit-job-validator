@@ -644,21 +644,48 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 	// of the SSR check, the browser's re-render): the first declared text
 	// field; a component without one has nothing to show.
 	const nonceField = textFields[0]?.name ?? null;
-	// The field-sinks probes (B1 run 10's security review: a link href without a scheme check, an unchecked accent in an inline style): the SSR render
-	// child renders the component once per value with every text and textarea
-	// field set to it, and the harness refuses a probe render that throws, an
-	// unsafe URL scheme in a URL attribute and the marker in CSS. The marker is
-	// this run's own, so a value that reaches an inline style shows as such.
+	// The field-sinks probes (B1 run 10's security review: a link href without
+	// a scheme check, an unchecked accent in an inline style): the SSR render
+	// child renders the component once per probe, first with every text and
+	// textarea field set to each hostile value, then with each select or radio
+	// field alone set to each (the others keep their defaults, so a choice that
+	// gates a sink stays open). The harness refuses a probe render that throws,
+	// an unsafe URL scheme in a URL attribute, the marker in CSS or a script,
+	// and the marker as markup. The marker is this run's own, so a value that
+	// reaches a sink shows as such.
 	const freeTextFields = decl.editableFields.filter((f) => f.type === "text" || f.type === "textarea");
+	const choiceFields = decl.editableFields.filter((f) => f.type === "select" || f.type === "radio");
 	const probeMarker = `anvilkit-probe-${randomBytes(8).toString("hex")}`;
-	const probeValues = freeTextFields.length
-		? [`javascript:alert(1)//${probeMarker}`, ` Data:text/html,${probeMarker}`]
-		: [];
-	const probeProps = probeValues.map((value) => ({
-		...defaultProps,
-		...Object.fromEntries(freeTextFields.map((f) => [f.name, value])),
-	}));
-	let ssrSinks: { ok?: boolean; probes?: number; errors?: string[] } | undefined;
+	const probeValues = [
+		`javascript:alert(1)//${probeMarker}`,
+		` Data:text/html,${probeMarker}`,
+		`"'><${probeMarker} ${probeMarker}="1"></${probeMarker}>`,
+	];
+	const probes: Array<{ value: string; field?: string; type?: string; props: Record<string, unknown> }> = [];
+	if (freeTextFields.length) {
+		for (const value of probeValues)
+			probes.push({
+				value,
+				props: { ...defaultProps, ...Object.fromEntries(freeTextFields.map((f) => [f.name, value])) },
+			});
+	}
+	for (const f of choiceFields) {
+		for (const value of probeValues)
+			probes.push({ value, field: f.name, type: f.type, props: { ...defaultProps, [f.name]: value } });
+	}
+	// The gated probes: the render child opens each select or radio option of
+	// the component's own Puck config beside every text field set to one value
+	// that is both a data: URL and markup, so a sink a choice keeps closed by
+	// default is probed too (each judged against the same option without it).
+	const gateValue = ` Data:text/html,"'><${probeMarker} ${probeMarker}="1"></${probeMarker}>`;
+	const gate =
+		freeTextFields.length && choiceFields.length
+			? {
+					fields: choiceFields.map((f) => f.name),
+					props: Object.fromEntries(freeTextFields.map((f) => [f.name, gateValue])),
+				}
+			: undefined;
+	let ssrSinks: { ok?: boolean; probes?: number; gated?: number; errors?: string[] } | undefined;
 	// A scratch directory per step for its HOME and TMPDIR, created by the
 	// trusted process (which holds no CAP_CHOWN in the Job) as a
 	// world-writable entry of the root-owned work tree. Nothing in it is ever
@@ -688,7 +715,8 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					puckType: decl.puckType,
 					directProps: defaultProps,
 					puckProps: nonce && nonceField ? { ...defaultProps, [nonceField]: nonce } : defaultProps,
-					probeProps,
+					probeProps: probes.map((p) => p.props),
+					gate,
 				}),
 				report: { maxBytes: maxRenderFrameBytes },
 				timeoutMs: limits.hostCheckTimeoutMs,
@@ -716,7 +744,11 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 						.filter((f) => f.name !== nonceField && (f.default as string).length > 0)
 						.map((f) => f.default as string),
 					nonce,
-					probe: { marker: probeMarker, values: probeValues },
+					probe: {
+						marker: probeMarker,
+						probes: probes.map(({ props: _props, ...described }) => described),
+						gateValue,
+					},
 					frame: render.report?.bytes.toString("utf8") ?? "",
 					renderExit: `exit ${render.code}, signal ${render.signal}`,
 				}),
@@ -738,7 +770,7 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				directHtmlDigest?: string;
 				puckHtmlDigest?: string;
 				reactVersion?: string;
-				sinks?: { ok?: boolean; probes?: number; errors?: string[] };
+				sinks?: { ok?: boolean; probes?: number; gated?: number; errors?: string[] };
 			}>(judged, "SSR harness");
 			host.ssr = report;
 			ssrSinks = report.sinks;
@@ -769,12 +801,13 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 		// The harness's verdict on this run's probe renders (judged in the SSR
 		// harness step above; nothing of the candidate runs here).
 		await run("field-sinks", () => {
-			if (!ssrSinks || typeof ssrSinks.ok !== "boolean" || ssrSinks.probes !== probeValues.length)
+			if (!ssrSinks || typeof ssrSinks.ok !== "boolean" || ssrSinks.probes !== probes.length)
 				throw new CheckFailure("OBSERVER_FAILED", "the SSR report carries no field-sink verdict on this run's probes");
 			if (!ssrSinks.ok)
 				throw new CheckFailure(
 					"CANDIDATE_TEST_FAILED",
-					(ssrSinks.errors ?? []).join("; ") || "a text value reached a URL attribute or CSS unchecked",
+					(ssrSinks.errors ?? []).join("; ") ||
+						"a field value reached a URL attribute, CSS, a script or the markup unchecked",
 				);
 		});
 	} else {
