@@ -22,6 +22,17 @@
 // file, report or frame written before the render ran can hold), the output
 // digests. Its report goes to fd 3, the orchestrator's pipe, never to a file.
 //
+// Field sinks (the field-sinks check, B1 run 10's SEC-01 and SEC-02): after
+// the two renders, the render child renders the component once per probe, with
+// every text and textarea field set to a hostile value the orchestrator chose
+// (a javascript: URL, a data: URL, each carrying a per-run marker). The harness
+// refuses a probe render that threw, a URL attribute with a javascript:,
+// vbscript: or data: scheme (React's own replacement of a javascript: URL
+// included: the component checks the scheme itself), and an inline style
+// attribute or a <style> element that carries the marker (a text value reached
+// CSS unchecked). The judge reads react-dom/server's own serialization:
+// attribute values in double quotes, five characters escaped.
+//
 // The candidate therefore authors only data: the HTML its render returned (or
 // whatever it wrote on its own descriptor, which is the same kind of data). It
 // cannot write the harness's report (another process, another UID, another
@@ -66,10 +77,86 @@ function asRenderedHtml(text) {
 	return text.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
 }
 
+const HTML_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+/** Decodes the character references of an attribute value (react-dom/server writes five; any other is decoded too). */
+function decodeHtml(text) {
+	return text.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, ref) => {
+		if (ref[0] !== "#") return HTML_ENTITIES[ref.toLowerCase()] ?? whole;
+		const code = ref[1] === "x" || ref[1] === "X" ? Number.parseInt(ref.slice(2), 16) : Number.parseInt(ref.slice(1), 10);
+		return Number.isFinite(code) && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+	});
+}
+
+// The attributes that carry a URL a browser follows, loads or submits to (lowercase).
+const URL_ATTRIBUTES = new Set([
+	"href",
+	"xlink:href",
+	"src",
+	"action",
+	"formaction",
+	"poster",
+	"data",
+	"cite",
+	"background",
+	"ping",
+	"srcset",
+	"imagesrcset",
+]);
+const UNSAFE_SCHEMES = new Set(["javascript", "vbscript", "data"]);
+
+/** The scheme a browser reads from a URL attribute value (WHATWG URL: outer C0/space stripped, tab and newline removed), lowercase, or null for a relative URL. */
+function urlScheme(value) {
+	const url = value.replace(/^[\u0000- ]+|[\u0000- ]+$/g, "").replace(/[\t\n\r]/g, "");
+	const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
+	return m ? m[1].toLowerCase() : null;
+}
+
+/** Every start tag of the HTML with its attributes (name lowercase, value decoded). */
+function startTags(html) {
+	const tags = [];
+	for (const tag of html.matchAll(/<([a-zA-Z][a-zA-Z0-9:-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*\/?>/g)) {
+		const attributes = [];
+		for (const a of tag[2].matchAll(/([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+			attributes.push({ name: a[1].toLowerCase(), value: decodeHtml(a[2] ?? a[3] ?? a[4] ?? "") });
+		}
+		tags.push({ name: tag[1].toLowerCase(), attributes });
+	}
+	return tags;
+}
+
+/** What one probe render shows of a text value reaching a URL attribute or CSS: one sentence per sink, empty when none. */
+function fieldSinkFindings(html, value, marker) {
+	const found = [];
+	const shown = JSON.stringify(value);
+	for (const tag of startTags(html)) {
+		for (const { name, value: attr } of tag.attributes) {
+			if (URL_ATTRIBUTES.has(name)) {
+				const urls = name.endsWith("srcset") ? attr.split(",").map((c) => c.trim().split(/\s+/)[0] ?? "") : [attr];
+				for (const url of urls) {
+					const scheme = urlScheme(url);
+					if (scheme && UNSAFE_SCHEMES.has(scheme))
+						found.push(
+							`with every text field set to ${shown}, <${tag.name} ${name}> renders a ${scheme}: URL; a text value reaches a URL attribute only after a scheme check that keeps relative, http:, https:, mailto: and tel: URLs`,
+						);
+				}
+			}
+			if (name === "style" && attr.includes(marker))
+				found.push(
+					`with every text field set to ${shown}, the inline style of <${tag.name}> carries the value; a text value reaches an inline style only after it matches a fixed pattern`,
+				);
+		}
+	}
+	for (const css of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)) {
+		if (css[1].includes(marker))
+			found.push(`with every text field set to ${shown}, a <style> element carries the value; a text value never reaches CSS`);
+	}
+	return [...new Set(found)];
+}
+
 // The render child: candidate code runs here, with no path to the harness's
 // report and no file the orchestrator reads.
 async function renderChild(io) {
-	const { modulePath, puckType, directProps, puckProps } = io;
+	const { modulePath, puckType, directProps, puckProps, probeProps } = io;
 	const frame = { schemaVersion: 1, meta: { errors: [] } };
 	try {
 		const mod = await import(pathToFileURL(modulePath).href);
@@ -102,9 +189,32 @@ async function renderChild(io) {
 		if (direct.length > MAX_HTML_BYTES || puck.length > MAX_HTML_BYTES)
 			throw new Error(`a render exceeds the ${MAX_HTML_BYTES}-byte bound`);
 		frame.meta.reactVersion = React.version;
+		// The field-sink probes, after both renders completed: each a render of
+		// its own, so a probe that throws leaves the two renders above intact.
+		const probes = [];
+		let probeBytes = 0;
+		for (const [i, props] of (Array.isArray(probeProps) ? probeProps : []).entries()) {
+			try {
+				const html = renderToString(
+					React.createElement(config.render, {
+						...base,
+						...props,
+						id: `ssr-probe-${i}`,
+						puck: { renderDropZone: () => null, isEditing: false, dragRef: null, metadata: {} },
+					}),
+				);
+				if (typeof html !== "string") throw new Error("the render did not return a string");
+				probeBytes += html.length;
+				if (probeBytes > MAX_HTML_BYTES) throw new Error(`the probe renders exceed the ${MAX_HTML_BYTES}-byte bound`);
+				probes.push({ html });
+			} catch (err) {
+				probes.push({ error: firstLines(err) });
+			}
+		}
 		// Both renders completed: only now does the frame carry rendered output.
 		frame.direct = direct;
 		frame.puck = puck;
+		frame.probes = probes;
 	} catch (err) {
 		frame.meta.errors.push(firstLines(err));
 	}
@@ -114,6 +224,43 @@ async function renderChild(io) {
 		/* a frame that cannot be written is a missing render to the harness */
 	}
 	rawExit(0);
+}
+
+/**
+ * The field-sinks verdict on the probe renders: one per hostile value the
+ * observer chose (`probe.values`, each carrying `probe.marker`), in order.
+ * A component without a text field has nothing to probe.
+ */
+function judgeSinks(probe, probes) {
+	const values = Array.isArray(probe?.values) ? probe.values.map(String) : [];
+	const sinks = { ok: false, probes: values.length, errors: [] };
+	if (values.length === 0) {
+		sinks.ok = true;
+		return sinks;
+	}
+	const marker = String(probe.marker ?? "");
+	if (!marker) {
+		sinks.errors.push("the observer named no probe marker");
+		return sinks;
+	}
+	if (!Array.isArray(probes) || probes.length !== values.length) {
+		sinks.errors.push(
+			`the render child returned ${Array.isArray(probes) ? probes.length : "no"} probe renders, the observer asked for ${values.length}`,
+		);
+		return sinks;
+	}
+	for (const [i, value] of values.entries()) {
+		const p = probes[i] && typeof probes[i] === "object" ? probes[i] : {};
+		if (typeof p.html !== "string") {
+			sinks.errors.push(
+				`the component threw when every text field held ${JSON.stringify(value)}: ${typeof p.error === "string" ? p.error : "no render"}`,
+			);
+			continue;
+		}
+		sinks.errors.push(...fieldSinkFindings(p.html, value, marker));
+	}
+	sinks.ok = sinks.errors.length === 0;
+	return sinks;
 }
 
 // The harness: judges the render child's frame, which it receives as bytes;
@@ -171,6 +318,7 @@ function judge(io) {
 		result.htmlSample = direct.slice(0, 512);
 		result.reactVersion = typeof meta.reactVersion === "string" ? meta.reactVersion : undefined;
 		result.ok = true;
+		result.sinks = judgeSinks(io.probe, frame.probes);
 	} catch (err) {
 		// The harness's own refusal: its message (the render child's errors it
 		// carries are already the first lines of the candidate's stack).
