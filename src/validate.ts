@@ -644,7 +644,7 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 	// of the SSR check, the browser's re-render): the first declared text
 	// field; a component without one has nothing to show.
 	const nonceField = textFields[0]?.name ?? null;
-	// The field-sinks probes (B1 run 10's SEC-01 and SEC-02): the SSR render
+	// The field-sinks probes (B1 run 10's security review: a link href without a scheme check, an unchecked accent in an inline style): the SSR render
 	// child renders the component once per value with every text and textarea
 	// field set to it, and the harness refuses a probe render that throws, an
 	// unsafe URL scheme in a URL attribute and the marker in CSS. The marker is
