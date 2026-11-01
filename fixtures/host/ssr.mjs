@@ -22,7 +22,7 @@
 // file, report or frame written before the render ran can hold), the output
 // digests. Its report goes to fd 3, the orchestrator's pipe, never to a file.
 //
-// Field sinks (the field-sinks check, B1 run 10's SEC-01 and SEC-02): after
+// Field sinks (the field-sinks check, after B1 run 10's security review): after
 // the two renders, the render child renders the component once per probe, with
 // every text and textarea field set to a hostile value the orchestrator chose
 // (a javascript: URL, a data: URL, each carrying a per-run marker). The harness
@@ -82,7 +82,8 @@ const HTML_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 function decodeHtml(text) {
 	return text.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, ref) => {
 		if (ref[0] !== "#") return HTML_ENTITIES[ref.toLowerCase()] ?? whole;
-		const code = ref[1] === "x" || ref[1] === "X" ? Number.parseInt(ref.slice(2), 16) : Number.parseInt(ref.slice(1), 10);
+		const code =
+			ref[1] === "x" || ref[1] === "X" ? Number.parseInt(ref.slice(2), 16) : Number.parseInt(ref.slice(1), 10);
 		return Number.isFinite(code) && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
 	});
 }
@@ -106,7 +107,11 @@ const UNSAFE_SCHEMES = new Set(["javascript", "vbscript", "data"]);
 
 /** The scheme a browser reads from a URL attribute value (WHATWG URL: outer C0/space stripped, tab and newline removed), lowercase, or null for a relative URL. */
 function urlScheme(value) {
-	const url = value.replace(/^[\u0000- ]+|[\u0000- ]+$/g, "").replace(/[\t\n\r]/g, "");
+	let start = 0;
+	let end = value.length;
+	while (start < end && value.charCodeAt(start) <= 0x20) start++;
+	while (end > start && value.charCodeAt(end - 1) <= 0x20) end--;
+	const url = value.slice(start, end).replace(/[\t\n\r]/g, "");
 	const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
 	return m ? m[1].toLowerCase() : null;
 }
@@ -114,7 +119,9 @@ function urlScheme(value) {
 /** Every start tag of the HTML with its attributes (name lowercase, value decoded). */
 function startTags(html) {
 	const tags = [];
-	for (const tag of html.matchAll(/<([a-zA-Z][a-zA-Z0-9:-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*\/?>/g)) {
+	for (const tag of html.matchAll(
+		/<([a-zA-Z][a-zA-Z0-9:-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*\/?>/g,
+	)) {
 		const attributes = [];
 		for (const a of tag[2].matchAll(/([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
 			attributes.push({ name: a[1].toLowerCase(), value: decodeHtml(a[2] ?? a[3] ?? a[4] ?? "") });
@@ -148,7 +155,9 @@ function fieldSinkFindings(html, value, marker) {
 	}
 	for (const css of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)) {
 		if (css[1].includes(marker))
-			found.push(`with every text field set to ${shown}, a <style> element carries the value; a text value never reaches CSS`);
+			found.push(
+				`with every text field set to ${shown}, a <style> element carries the value; a text value never reaches CSS`,
+			);
 	}
 	return [...new Set(found)];
 }

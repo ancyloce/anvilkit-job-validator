@@ -29,8 +29,23 @@ none) bind the allocated identity as the Job does (`IDENTITY_MISMATCH`, exit
 **Mandatory checks.** `validator-dev-v1.json` names the checks a
 certification must contain (`checks`: source contract, toolchain, protected
 fixtures, npm package, declarations, browser module, CSS/resources, SSR
-render, browser host). A run is `certified` only when every one of them
-passed in that run (`complete: true`). `--no-ssr`/`--no-browser` make a
+render, field sinks, browser host). A run is `certified` only when every one
+of them passed in that run (`complete: true`).
+
+**Field sinks.** `field-sinks` (after B1 run 10's security review found a link `href`
+without a scheme check and an unchecked accent in an inline style) is judged by
+the SSR harness from extra renders of the SSR render child: once per hostile
+value, with every `text` and `textarea` field set to it (a `javascript:` URL,
+then a mixed-case `data:` URL, each carrying a marker of the run). It fails
+(`CANDIDATE_TEST_FAILED`) when a probe render throws, when a URL attribute
+(`href`, `src`, `action`, `formaction`, `srcset` and the like) has a
+`javascript:`, `vbscript:` or `data:` scheme — React's own replacement of a
+`javascript:` URL included, since the component must check the scheme
+itself — and when an inline `style` attribute or a `<style>` element carries
+the marker. It reads react-dom/server's serialization of the probe renders;
+it does not probe `select`, `radio`, `number` or nested `array`/`object`
+fields, nor a text value that reaches markup through
+`dangerouslySetInnerHTML`. `--no-ssr`/`--no-browser` make a
 diagnostic run: its skipped checks are `not_run`, its verdict is
 `infrastructure_failed`/`OBSERVER_FAILED`, `complete` is `false`, and
 `certificationBinds` never accepts it for reuse; the Job refuses a
