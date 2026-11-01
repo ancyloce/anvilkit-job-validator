@@ -501,7 +501,38 @@ export default config;
 		const cert = await sinkCert("checked");
 		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("pass");
 		expect(cert.checks.find((c) => c.name === "field-sinks")).toEqual({ name: "field-sinks", status: "pass" });
-		expect((cert.host.ssr as { sinks?: unknown }).sinks).toEqual({ ok: true, probes: 2, errors: [] });
+		// Three text probes and three of the radio field `align` (a class name, no sink).
+		// One gated render: align's other option, "center", beside the text values.
+		expect((cert.host.ssr as { sinks?: unknown }).sinks).toEqual({ ok: true, probes: 6, gated: 1, errors: [] });
+	});
+
+	it("refuses a text value rendered as markup through dangerouslySetInnerHTML", async () => {
+		const cert = await sinkCert("markup");
+		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("pass");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(sinkDetail(cert)).toContain("the value is rendered as markup");
+		expect(sinkDetail(cert)).toContain("never through dangerouslySetInnerHTML");
+	});
+
+	it("refuses a text value in an href that a radio option opens (the gated probes)", async () => {
+		const cert = await sinkCert("gated-href");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(sinkDetail(cert)).toContain('and the radio field align set to "center", <a href> renders a data: URL');
+	});
+
+	it("passes a constant javascript: href and a function form action, which no field value produces", async () => {
+		const cert = await sinkCert("constants");
+		expect(cert.checks.find((c) => c.name === "field-sinks")).toEqual({ name: "field-sinks", status: "pass" });
+	});
+
+	it("refuses a radio value in an inline style, probed field by field", async () => {
+		const cert = await sinkCert("choice-style");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(sinkDetail(cert)).toContain("with the radio field align set to");
+		expect(sinkDetail(cert)).toContain(
+			"a select or radio value reaches an inline style only after it matches one of the field's options",
+		);
+		expect(sinkDetail(cert)).not.toContain("with every text field");
 	});
 
 	it("refuses FIFOs and symbolic links planted at the report paths without hanging", async () => {

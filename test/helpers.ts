@@ -188,23 +188,29 @@ export default config;
  * `href` the CTA label into a link's href, `style` the subtitle into an inline
  * custom property, `checked` both behind the checks the source contract asks
  * for (a scheme allowlist, a colour pattern), `throw` a render that throws on a
- * value with a colon.
+ * value with a colon, `markup` the subtitle through dangerouslySetInnerHTML,
+ * `choice-style` the radio field `align` into an inline custom property,
+ * `gated-href` the CTA label into an href only when `align` is "center" (not
+ * its default), `constants` a fixed `javascript:void(0)` href and a function
+ * form action (React's own javascript: URL), neither of them a field value.
  */
-export function sinkModule(mode: "href" | "style" | "checked" | "throw"): string {
+export function sinkModule(
+	mode: "href" | "style" | "checked" | "throw" | "markup" | "choice-style" | "gated-href" | "constants",
+): string {
 	return `import { createElement as h } from "react";
 const safeHref = (v) => (/^(https?:|mailto:|tel:|\\/(?!\\/)|#)/i.test(v.trim()) ? v.trim() : "/start");
 const safeColour = (v) => (/^#[0-9a-fA-F]{6}$/.test(v) ? v : "#0b3d91");
 export function Hero({ title, subtitle, align, ctaLabel }) {
 	${mode === "throw" ? 'if (ctaLabel.includes(":")) throw new Error("unexpected label");' : ""}
-	const style = ${mode === "style" ? '{ "--ak-accent": subtitle }' : mode === "checked" ? '{ "--ak-accent": safeColour(subtitle) }' : "undefined"};
-	const href = ${mode === "href" ? "ctaLabel" : mode === "checked" ? "safeHref(ctaLabel)" : '"/start"'};
+	const style = ${mode === "style" ? '{ "--ak-accent": subtitle }' : mode === "checked" ? '{ "--ak-accent": safeColour(subtitle) }' : mode === "choice-style" ? '{ "--ak-align": align }' : "undefined"};
+	const href = ${mode === "href" ? "ctaLabel" : mode === "checked" ? "safeHref(ctaLabel)" : mode === "gated-href" ? 'align === "center" ? ctaLabel : "/start"' : mode === "constants" ? '"javascript:void(0)"' : '"/start"'};
 	return h("section", { className: "ak-hero ak-hero--" + align, "data-anvilkit-component": "Hero", style },
 		h("h1", { className: "ak-hero__title" }, title),
-		h("p", { className: "ak-hero__subtitle" }, subtitle),
-		h("a", { className: "ak-hero__cta", href }, ctaLabel));
+		${mode === "markup" ? 'h("p", { className: "ak-hero__subtitle", dangerouslySetInnerHTML: { __html: subtitle } }),' : 'h("p", { className: "ak-hero__subtitle" }, subtitle),'}
+		h("a", { className: "ak-hero__cta", href }, ctaLabel)${mode === "constants" ? ',\n\t\th("form", { action: async () => {} }, h("button", { type: "submit" }, "Send"))' : ""});
 }
 export const config = {
-	fields: { title: { type: "text" }, subtitle: { type: "textarea" }, align: { type: "radio" }, ctaLabel: { type: "text" } },
+	fields: { title: { type: "text" }, subtitle: { type: "textarea" }, align: { type: "radio", options: [{ label: "Left", value: "left" }, { label: "Center", value: "center" }] }, ctaLabel: { type: "text" } },
 	defaultProps: { title: ${JSON.stringify(heroTexts[0])}, subtitle: ${JSON.stringify(heroTexts[1])}, align: "left", ctaLabel: ${JSON.stringify(heroTexts[2])} },
 	render: (props) => h(Hero, props),
 };
