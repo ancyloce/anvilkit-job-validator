@@ -30,28 +30,42 @@ none) bind the allocated identity as the Job does (`IDENTITY_MISMATCH`, exit
 certification must contain (`checks`: source contract, toolchain, protected
 fixtures, npm package, declarations, browser module, CSS/resources, SSR
 render, field sinks, browser host). A run is `certified` only when every one
-of them passed in that run (`complete: true`).
-
-**Field sinks.** `field-sinks` (after B1 run 10's security review found a link `href`
-without a scheme check and an unchecked accent in an inline style) is judged by
-the SSR harness from extra renders of the SSR render child: once per hostile
-value, with every `text` and `textarea` field set to it (a `javascript:` URL,
-then a mixed-case `data:` URL, each carrying a marker of the run). It fails
-(`CANDIDATE_TEST_FAILED`) when a probe render throws, when a URL attribute
-(`href`, `src`, `action`, `formaction`, `srcset` and the like) has a
-`javascript:`, `vbscript:` or `data:` scheme — React's own replacement of a
-`javascript:` URL included, since the component must check the scheme
-itself — and when an inline `style` attribute or a `<style>` element carries
-the marker. It reads react-dom/server's serialization of the probe renders;
-it does not probe `select`, `radio`, `number` or nested `array`/`object`
-fields, nor a text value that reaches markup through
-`dangerouslySetInnerHTML`. `--no-ssr`/`--no-browser` make a
+of them passed in that run (`complete: true`). `--no-ssr`/`--no-browser` make a
 diagnostic run: its skipped checks are `not_run`, its verdict is
 `infrastructure_failed`/`OBSERVER_FAILED`, `complete` is `false`, and
 `certificationBinds` never accepts it for reuse; the Job refuses a
 `host_checks` configuration that disables a mandatory check instead of
 launching a run that could never certify. Removing a check from the profile
 changes its digest, and with it every certification's binding.
+
+**Field sinks.** `field-sinks` (after B1 run 10's security review found a link `href`
+without a scheme check and an unchecked accent in an inline style) is judged by
+the SSR harness from extra renders of the SSR render child, each value carrying
+a marker of the run:
+
+- every `text` and `textarea` field at once set to each of three values (a
+  `javascript:` URL, a mixed-case `data:` URL, markup that leaves an attribute);
+- each `select` and `radio` field alone set to each of them, the others at
+  their defaults;
+- for each option a `select` or `radio` field lists in the component's own Puck
+  config (other than its default; at most 8 per field and 32 in all), that
+  option beside every text field set to one value that is both a `data:` URL
+  and markup, judged against the same option without it, so a sink a choice
+  keeps closed by default is probed too.
+
+It fails (`CANDIDATE_TEST_FAILED`) when a probe render throws; when a URL
+attribute (`href`, `src`, `action`, `formaction`, `srcset` and the like, a
+`<script src>` included) has a `javascript:`, `vbscript:` or `data:` scheme
+that the same render without the value lacks (React's replacement of a
+`javascript:` URL counts, since the component must check the scheme itself; a
+constant URL and React's own function form action do not); when an inline
+`style` attribute, a `<style>` or a `<script>` element carries the marker; when
+the marker is a tag or attribute name or sits in `srcdoc` (the value rendered as
+markup); and when the probe renders exceed 4 MiB together. It reports at most
+eight sentences. It reads react-dom/server's serialization only, so it does not
+see what a component renders after hydration (a link gated by `useEffect`). It
+does not probe `number` or nested `array`/`object` fields, nor a value split by
+a tab inside its scheme.
 
 ## Profiles
 
