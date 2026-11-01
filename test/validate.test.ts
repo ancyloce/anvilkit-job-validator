@@ -21,6 +21,7 @@ import {
 	packageRoot,
 	removeTree,
 	scratchCopy,
+	sinkModule,
 } from "./helpers.js";
 
 type Callable<T> = T extends (...a: infer A) => infer R
@@ -216,6 +217,7 @@ describe("independent certification of the fixed component", () => {
 		});
 		fails(cert, "INVALID_EXPORTS", "repairable", "browser-module");
 		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("not_run");
+		expect(cert.checks.find((c) => c.name === "field-sinks")?.status).toBe("not_run");
 		expect(cert.checks.find((c) => c.name === "browser-host")?.status).toBe("not_run");
 	});
 
@@ -460,6 +462,46 @@ export default config;
 		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "ssr-render");
 		expect(cert.checks.find((c) => c.name === "ssr-render")?.detail).toMatch(/lacks the value the observer chose/);
 		expect(cert.steps.ssr?.code).toBe(0);
+	});
+
+	// The field-sinks check (B1 run 10's security review): the SSR harness
+	// judges probe renders with every text field set to a hostile value.
+	const sinkCert = async (mode: Parameters<typeof sinkModule>[0]) => {
+		const b = await mutated((pkg) => writeFileSync(path.join(pkg, "dist", "index.js"), sinkModule(mode)));
+		return certify({ source, build: b, profiles, toolchain, identity, hostChecks: { ssr: true, browser: false } });
+	};
+	const sinkDetail = (cert: Certification) => cert.checks.find((c) => c.name === "field-sinks")?.detail ?? "";
+
+	it("refuses a text value in a link's href without a scheme check, React's blocked javascript: URL included", async () => {
+		const cert = await sinkCert("href");
+		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("pass");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(sinkDetail(cert)).toMatch(
+			/javascript:alert\(1\)\/\/anvilkit-probe-[0-9a-f]{16}", <a href> renders a javascript: URL/,
+		);
+		expect(sinkDetail(cert)).toMatch(/ Data:text\/html,anvilkit-probe-[0-9a-f]{16}", <a href> renders a data: URL/);
+		expect(cert.checks.find((c) => c.name === "browser-host")?.status).toBe("not_run");
+	});
+
+	it("refuses a text value in an inline style", async () => {
+		const cert = await sinkCert("style");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(sinkDetail(cert)).toContain("the inline style of <section> carries the value");
+		expect(sinkDetail(cert)).not.toContain("URL attribute");
+	});
+
+	it("refuses a render that throws on a hostile text value", async () => {
+		const cert = await sinkCert("throw");
+		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("pass");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(sinkDetail(cert)).toContain("the component threw when every text field held");
+	});
+
+	it("passes a scheme-checked href and a pattern-checked colour", async () => {
+		const cert = await sinkCert("checked");
+		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("pass");
+		expect(cert.checks.find((c) => c.name === "field-sinks")).toEqual({ name: "field-sinks", status: "pass" });
+		expect((cert.host.ssr as { sinks?: unknown }).sinks).toEqual({ ok: true, probes: 2, errors: [] });
 	});
 
 	it("refuses FIFOs and symbolic links planted at the report paths without hanging", async () => {

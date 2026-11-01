@@ -182,6 +182,36 @@ export default config;
 `;
 }
 
+/**
+ * A browser module with the hero's exports, fields and defaults that routes a
+ * text field into a sink (the field-sinks check, B1 run 10's security review):
+ * `href` the CTA label into a link's href, `style` the subtitle into an inline
+ * custom property, `checked` both behind the checks the source contract asks
+ * for (a scheme allowlist, a colour pattern), `throw` a render that throws on a
+ * value with a colon.
+ */
+export function sinkModule(mode: "href" | "style" | "checked" | "throw"): string {
+	return `import { createElement as h } from "react";
+const safeHref = (v) => (/^(https?:|mailto:|tel:|\\/(?!\\/)|#)/i.test(v.trim()) ? v.trim() : "/start");
+const safeColour = (v) => (/^#[0-9a-fA-F]{6}$/.test(v) ? v : "#0b3d91");
+export function Hero({ title, subtitle, align, ctaLabel }) {
+	${mode === "throw" ? 'if (ctaLabel.includes(":")) throw new Error("unexpected label");' : ""}
+	const style = ${mode === "style" ? '{ "--ak-accent": subtitle }' : mode === "checked" ? '{ "--ak-accent": safeColour(subtitle) }' : "undefined"};
+	const href = ${mode === "href" ? "ctaLabel" : mode === "checked" ? "safeHref(ctaLabel)" : '"/start"'};
+	return h("section", { className: "ak-hero ak-hero--" + align, "data-anvilkit-component": "Hero", style },
+		h("h1", { className: "ak-hero__title" }, title),
+		h("p", { className: "ak-hero__subtitle" }, subtitle),
+		h("a", { className: "ak-hero__cta", href }, ctaLabel));
+}
+export const config = {
+	fields: { title: { type: "text" }, subtitle: { type: "textarea" }, align: { type: "radio" }, ctaLabel: { type: "text" } },
+	defaultProps: { title: ${JSON.stringify(heroTexts[0])}, subtitle: ${JSON.stringify(heroTexts[1])}, align: "left", ctaLabel: ${JSON.stringify(heroTexts[2])} },
+	render: (props) => h(Hero, props),
+};
+export default config;
+`;
+}
+
 /** Every file (or link or FIFO) named like a report under the work tree: what the forging module planted. */
 export function forgedFiles(root: string): string[] {
 	const out: string[] = [];
