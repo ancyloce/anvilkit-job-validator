@@ -158,15 +158,6 @@ export function loadProfiles(validatorProfileId?: string, dir = profilesDir): Pr
 	return { build, host, validator };
 }
 
-/** Digest of the profile set a certification binds (build, host, validator). */
-export function profileSetDigest(p: Profiles): Digest {
-	return canonicalDigest({
-		build: p.build.profileDigest,
-		host: p.host.profileDigest,
-		validator: p.validator.profileDigest,
-	});
-}
-
 const require = createRequire(import.meta.url);
 
 function installedVersion(pkg: string): string {

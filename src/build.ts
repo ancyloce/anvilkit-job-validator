@@ -5,7 +5,7 @@
 // profiles alone: the candidate's rollup/vite/tsconfig/postcss files never
 // reach the build (source.ts already refuses them), its package.json never
 // becomes the published one, and no lifecycle script of any package runs.
-import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BuildConfig, BuildResult } from "./build-worker.js";
 import { type Digest, sequence, sha256 } from "./digest.js";
@@ -346,9 +346,4 @@ export async function buildComponent(
 			warnings: result.warnings,
 		},
 	};
-}
-
-/** Size of a file as the contract writes it. */
-export function fileSize(file: string): string {
-	return sequence(statSync(file).size);
 }
