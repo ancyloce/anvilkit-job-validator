@@ -23,7 +23,7 @@
 // Exit 0 when the chain completed (whatever the verdict; the verdict is in
 // the certification), 1 when the source contract or the build refused
 // (their code and message are printed as JSON), 2 for a usage or profile
-// problem.
+// problem or an unexpected error.
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { BuildError, buildComponent } from "./build.js";

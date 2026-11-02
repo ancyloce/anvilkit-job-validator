@@ -16,9 +16,9 @@
 // process never imports candidate modules.
 //
 // Exit 0 when the trusted flow completed (whatever the verdict, a refused
-// launch included), 1 when it could not (no scope, no authority, a refused
-// submission, a toolchain the profile does not freeze), 2 for a
-// configuration or layout defect.
+// launch included), 1 when it could not (no scope, no authority, a layout
+// defect, a refused submission, a toolchain the profile does not freeze), 2
+// when the configuration file cannot be loaded.
 import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";

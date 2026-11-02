@@ -347,17 +347,17 @@ describe("independent certification of the fixed component", () => {
 	});
 
 	it("rejects a candidate that throws during SSR while poisoning the serialization primitives (P10-F01)", async () => {
-		// The render child no longer assembles the trusted result with the same
-		// JavaScript environment's JSON.stringify and process.stdout.write after
-		// importing the candidate, so a candidate cannot rewrite the report to
-		// hide a real render failure. This module keeps the whole static contract
-		// (imports the host's React, exports Hero/config/default, ships the fixed
-		// CSS) but its render throws, and at import it poisons JSON.stringify and
-		// process.stdout.write to forge a fully successful SSR report — exactly the
-		// evidence the OLD render child would have emitted. With the fix the trusted
-		// harness reads the rendered HTML the child writes (a throwing render writes
-		// none) and never the poisoned serialization, so the actual SSR failure is
-		// rejected through the normal readSource → buildComponent → certify flow.
+		// The trusted result is not assembled with the JSON.stringify and
+		// process.stdout.write of the JavaScript environment that imported the
+		// candidate, so a candidate cannot rewrite the report to hide a real
+		// render failure. This module keeps the whole static contract (imports
+		// the host's React, exports Hero/config/default, ships the fixed CSS) but
+		// its render throws, and at import it poisons JSON.stringify and
+		// process.stdout.write to forge a fully successful SSR report. The
+		// trusted harness reads the rendered HTML the child writes (a throwing
+		// render writes none) and never the poisoned serialization, so the actual
+		// SSR failure is rejected through the normal readSource → buildComponent
+		// → certify flow.
 		const texts = [
 			"Build once, certify exactly",
 			"A reviewed fixed component: complete source, protected build, independent verdict.",
@@ -827,9 +827,9 @@ export default config;
 			resources: ["dist/assets/a b.svg", "dist/assets/mark.svg"],
 			selectors: [".a", ".b::before"],
 		});
-		// References the older code missed: url() inside a custom property and a
-		// var() fallback, and a string URL in image-set() (its url() entries were
-		// already caught). All are resolved and reviewed like any other resource.
+		// Less direct references: url() inside a custom property and a var()
+		// fallback, and a string URL in image-set() beside its url() entries.
+		// All are resolved and reviewed like any other resource.
 		expect(
 			refs(
 				':root { --m: url("../assets/mark.svg"); } .a { background: image-set("../assets/a%20b.svg" 1x, url(../assets/mark.svg) 2x); } .b { background: var(--x, url(../assets/mark.svg)); }',
@@ -839,11 +839,11 @@ export default config;
 			resources: ["dist/assets/a b.svg", "dist/assets/mark.svg"],
 			selectors: [":root", ".a", ".b"],
 		});
-		// Escaped identifiers the older code missed (P10-F02): an escaped @import
-		// name, a url() and a src() parsed as Function nodes because of an escaped
-		// name, and an escaped image-set() name. css-tree leaves the identifiers
-		// escaped; ident.decode normalises them so each escaped form resolves under
-		// the same rules as its plain form and a valid packaged reference is
+		// Escaped identifiers (P10-F02): an escaped @import name, a url() and a
+		// src() parsed as Function nodes because of an escaped name, and an
+		// escaped image-set() name. css-tree leaves the identifiers escaped;
+		// ident.decode normalises them so each escaped form resolves under the
+		// same rules as its plain form and a valid packaged reference is
 		// recorded — escaped syntax is not rejected wholesale.
 		expect(
 			refs(

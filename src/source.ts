@@ -8,9 +8,9 @@
 //
 // Reviewed layout of a complete source:
 //   component.json          the declaration (schemaVersion 1)
-//   package.json            name, version, exact dependencies only
-//   pnpm-lock.yaml          the candidate's lockfile (recorded by digest,
-//                           never installed from)
+//   package.json            name, version, description, license, exact deps
+//   pnpm-lock.yaml          the lockfile, recorded by digest, never installed
+//   LICENSE                 optional
 //   <usage>.md              usage instructions named by the declaration
 //   src/**/*.ts|*.tsx       code; the entry is src/index.tsx
 //   styles/**/*.css         every stylesheet, each declared

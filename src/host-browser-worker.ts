@@ -67,7 +67,7 @@ export interface BrowserSession {
 	expectedTexts: string[];
 	/** A text field to re-render with a value of the worker's choosing (null when the component declares none). */
 	nonceField: string | null;
-	/** The fixed-fixture interaction contract: a click must advance this DOM attribute by `increment` (null: none required). */
+	/** The component's declared interaction (component.json): a click must advance this DOM attribute by `increment` (null: none required). */
 	interaction: { counterAttribute: string; increment: number } | null;
 	timeoutMs: number;
 	/** Chromium's sandbox: "required" refuses to run without it, "preferred" runs without it where the runtime has none and says why. */
@@ -102,9 +102,9 @@ export interface BrowserObservation {
 	nonce: { field: string | null; rendered: boolean };
 	/**
 	 * The real click and its outcome: how many buttons, whether the click landed,
-	 * and — when the profile names a counter attribute — whether that attribute
-	 * advanced by the required amount (its before/after values), the defined
-	 * click-count transition of the fixed Hero.
+	 * and — when the component declares a counter attribute (the fixed Hero's
+	 * `data-clicks`) — whether that attribute advanced by the declared amount
+	 * (its before/after values).
 	 */
 	interaction: {
 		buttons: number;
@@ -371,8 +371,8 @@ async function main(): Promise<void> {
 			}
 		}
 
-		// Interaction: real input through the browser. When the profile names a
-		// counter attribute (the fixed Hero's `data-clicks`), the worker verifies
+		// Interaction: real input through the browser. When the component declares
+		// a counter attribute (the fixed Hero's `data-clicks`), the worker verifies
 		// the defined click-count transition — the attribute advancing by the
 		// required amount — by waiting through Playwright's own locator for the
 		// element that carries the incremented value, never a fixed sleep and

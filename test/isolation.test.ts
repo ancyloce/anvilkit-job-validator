@@ -60,7 +60,7 @@ describe("step stop and confirmation as the caller", () => {
 	it("returns within a bound as unobserved when the stop cannot be established and the leader stays alive", async () => {
 		// A step that hangs past its bound, with a stop that never establishes
 		// the kill (the setpriv helper failing in the Job): the leader is still
-		// alive when settle runs, so the pre-fix `await exited` would hang here.
+		// alive when settle runs, so an unbounded `await exited` would hang here.
 		// runStep must instead resolve within a defined bound with the stop
 		// unconfirmed, so the caller treats the step as OBSERVER_FAILED and
 		// reads nothing it left; the Job's own cleanup reclaims the survivor.

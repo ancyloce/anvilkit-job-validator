@@ -81,7 +81,8 @@ describe("contract validation of the Job's outputs", () => {
 		};
 		expect(validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, envelope)).toBeUndefined();
 		expect(validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, { ...envelope, component })).toBeUndefined();
-		// All four facts are required, and nothing else is accepted.
+		// The source revision is required (the identity is all three members or
+		// none), and nothing else is accepted.
 		const { sourceRevision: _omitted, ...partial } = component;
 		expect(validateAgainst(`${jobsSchemaId}#/$defs/launchEnvelope`, { ...envelope, component: partial })).toBeDefined();
 		expect(

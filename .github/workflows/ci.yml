@@ -19,7 +19,7 @@ env:
   # launch envelope's component, the IDENTITY_MISMATCH and PROFILE_DISABLED
   # failure codes and the profile state/bindsSource fields, and
   # jobs/profiles.json with validator-fixture-v1 and validator-source(-dev)-v1
-  # (P0.8): the published commit of tag go/v0.1.10.
+  # (P0.8): the published commit of tag go/v0.1.18.
   CONTRACTS_REF: b3fe8697697902fb8c0767c2463f0af7c945842a
 permissions:
   contents: read

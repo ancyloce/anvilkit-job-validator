@@ -39,13 +39,14 @@ function sha256(b: Buffer): string {
 	return createHash("sha256").update(b).digest("hex");
 }
 
-/** The frame page for one parent origin and one serving origin. */
+/** The Host ABI's import map: each external specifier mapped to its /host/ bundle. */
 export function importMapOf(externals: string[]): string {
 	const imports: Record<string, string> = {};
 	for (const s of externals) imports[s] = `/host/${bundleName(s)}`;
 	return JSON.stringify({ imports });
 }
 
+/** The frame page for one parent origin and one import map. */
 export function framePage(parentOrigin: string, importMap: string): string {
 	const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 	return `<!doctype html>

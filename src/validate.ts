@@ -205,8 +205,8 @@ function stepReport<T>(step: StepOutcome, what: string): T {
 	return value as T;
 }
 
-// Bounds of what the steps hand over on fd 3: the render child's frame (two
-// HTML strings of at most 4 MiB each and the meta), the reports.
+// Bounds of what the steps hand over on fd 3: the render frame (two 4 MiB HTML
+// strings, field-sink renders sharing one 4 MiB, the meta) and the reports.
 const maxRenderFrameBytes = 12 * 1024 * 1024;
 const maxReportBytes = 4 * 1024 * 1024;
 
@@ -312,7 +312,7 @@ export function stylesheetReferences(
 						resources.add(resolve(first.value, `${fname}()`));
 					} else if (fname === "image-set" || fname === "-webkit-image-set") {
 						// Bare string entries of image-set() are resource references too;
-						// its url() entries are caught by the Url case below.
+						// its url() entries are caught by the Url case.
 						node.children.forEach((child) => {
 							if (child.type === "String") resources.add(resolve(child.value, "image-set()"));
 						});
@@ -893,8 +893,8 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 			host.browser = report;
 			// What decides below is the worker's observation through Playwright
 			// (isolated world, its request log, real input, the captured control)
-			// and the server's log; report.page is the main world's own account
-			// and is carried as data only.
+			// and the worker's route log; report.page is the main world's own
+			// account and is carried as data only.
 			if (report.kind === "infrastructure")
 				throw new CheckFailure("OBSERVER_FAILED", report.error ?? "browser step failed");
 			if (report.kind === "timeout")
@@ -902,7 +902,8 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 			if (report.kind === "candidate" || !report.observed)
 				throw new CheckFailure("CANDIDATE_TEST_FAILED", report.error ?? "the host page could not be observed");
 			const observed = report.observed;
-			// The module served was the exact artifact: the server log shows it and the stylesheets requested.
+			// The module served was the exact artifact: the worker's route log
+			// shows it and the stylesheets requested.
 			const served = new Set(report.requests.filter((r) => r.status === 200).map((r) => r.path));
 			if (!served.has(session.moduleUrl))
 				throw new CheckFailure("CANDIDATE_TEST_FAILED", "the page did not load the browser module");
