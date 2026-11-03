@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { chmodSync, chownSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import * as tar from "tar";
 import { afterAll, describe, expect, it } from "vitest";
 import { contractsDir } from "../src/contracts.js";
 import { type Envelope, jobProfile, LaunchRefusal, main, type SourceSelection, selectSource } from "../src/job.js";
+import { HEADER_PEER_NONCE, HEADER_PEER_TOKEN, HEADER_SIDECAR_PROOF, peerToken, sidecarProof } from "../src/peer.js";
 import { heroSource, removeTree, rootGate } from "./helpers.js";
 
 const scratch: string[] = [];
@@ -123,24 +124,36 @@ describe("the bound-source rule (B-21)", () => {
 	});
 });
 
-// The Job end to end against a fake access sidecar on its trusted socket
-// (root only: the socket layout the Job verifies is owned by the sidecar's
-// UID and group 0). The chain runs as the caller.
+// The Job end to end against a fake access sidecar on its trusted socket:
+// an abstract-namespace name unique to the run, the launch secret's trusted
+// token checked on every request and the proof over the request's nonce
+// set on every answer (DEC-045 B2). The chain runs as the caller; the gate
+// stays root-only because the chain's step identities are real UIDs.
 const gate = rootGate([]);
 
 interface Sidecar {
-	socketDir: string;
+	/** The abstract trusted socket name in the `@` form the Job's configuration takes. */
+	socket: string;
+	/** The launch secret the sidecar holds (64 hex); the Job gets the same one in its environment. */
+	secret: string;
 	loads: number;
 	transfers: Array<{ class: string; body: Buffer }>;
 	results: Array<{ verdict: string; failureCode: string; manifest: Record<string, unknown> }>;
+	/** Requests refused by the guard (PEER_NONCE_INVALID, PEER_TOKEN_MISMATCH). */
+	refused: string[];
 	close: () => Promise<void>;
 }
 
-async function fakeSidecar(root: string, env: Envelope, archive: Buffer): Promise<Sidecar> {
-	const socketDir = path.join(root, "sockets");
-	mkdirSync(socketDir);
-	const socket = path.join(socketDir, "trusted.sock");
-	const state: Sidecar = { socketDir, loads: 0, transfers: [], results: [], close: async () => {} };
+interface SidecarOptions {
+	/** Answer without the proof header (a process that holds the name but not the secret). */
+	noProof?: boolean;
+}
+
+async function fakeSidecar(env: Envelope, archive: Buffer, options: SidecarOptions = {}): Promise<Sidecar> {
+	const socket = `@anvilkit-validator-test/${process.pid}/${randomBytes(6).toString("hex")}/trusted`;
+	const secret = randomBytes(32).toString("hex");
+	const token = Buffer.from(peerToken(secret, "trusted"), "hex");
+	const state: Sidecar = { socket, secret, loads: 0, transfers: [], results: [], refused: [], close: async () => {} };
 	const server = http.createServer((req, res) => {
 		const chunks: Buffer[] = [];
 		req.on("data", (c: Buffer) => chunks.push(c));
@@ -150,6 +163,20 @@ async function fakeSidecar(root: string, env: Envelope, archive: Buffer): Promis
 				res.writeHead(status, { "content-type": "application/json" });
 				res.end(JSON.stringify(value));
 			};
+			// The guard: the nonce's shape, then the token under a constant-time
+			// compare; a request that passes gets the proof on whatever it is answered.
+			const nonce = req.headers[HEADER_PEER_NONCE];
+			if (typeof nonce !== "string" || !/^[0-9a-f]{32}$/.test(nonce)) {
+				state.refused.push("PEER_NONCE_INVALID");
+				return json(400, { code: "PEER_NONCE_INVALID" });
+			}
+			const presented = req.headers[HEADER_PEER_TOKEN];
+			const got = typeof presented === "string" && presented.length === 64 ? Buffer.from(presented, "hex") : null;
+			if (!got || got.length !== token.length || !timingSafeEqual(got, token)) {
+				state.refused.push("PEER_TOKEN_MISMATCH");
+				return json(403, { code: "PEER_TOKEN_MISMATCH" });
+			}
+			if (!options.noProof) res.setHeader(HEADER_SIDECAR_PROOF, sidecarProof(token.toString("hex"), nonce));
 			if (req.method === "GET" && req.url === "/v1/scope") {
 				json(200, {
 					scope: {
@@ -191,12 +218,7 @@ async function fakeSidecar(root: string, env: Envelope, archive: Buffer): Promis
 			}
 		});
 	});
-	await new Promise<void>((resolve) => server.listen(socket, resolve));
-	// The DD-03 layout the Job verifies before it sends anything.
-	chownSync(socketDir, 10002, 0);
-	chmodSync(socketDir, 0o711);
-	chownSync(socket, 10002, 0);
-	chmodSync(socket, 0o660);
+	await new Promise<void>((resolve) => server.listen(`\0${socket.slice(1)}`, resolve));
 	state.close = () => new Promise((resolve) => server.close(() => resolve()));
 	return state;
 }
@@ -220,6 +242,7 @@ async function heroArchive(): Promise<Buffer> {
 async function runJob(
 	launch: Partial<Envelope>,
 	archive: Buffer,
+	options: SidecarOptions & { secret?: (sidecar: Sidecar) => string } = {},
 ): Promise<{ code: number; summary: Record<string, unknown>; sidecar: Sidecar }> {
 	const root = dir("anvilkit-job-");
 	chmodSync(root, 0o755);
@@ -239,7 +262,7 @@ async function runJob(
 		inputs: [],
 		...launch,
 	};
-	const sidecar = await fakeSidecar(root, env, archive);
+	const sidecar = await fakeSidecar(env, archive, options);
 	const config = path.join(root, "config.yaml");
 	writeFileSync(
 		config,
@@ -247,13 +270,13 @@ async function runJob(
 			"paths:",
 			`  workspace: ${path.join(root, "workspace")}`,
 			`  verdict: ${path.join(root, "verdict")}`,
-			`  sockets: ${sidecar.socketDir}`,
 			`  termination_log: ${path.join(root, "termination-log")}`,
 			`  fixed_source: ${heroSource}`,
 			"candidate:",
 			"  identity: caller",
 			"sidecar:",
 			"  uid: 10002",
+			`  socket: "${sidecar.socket}"`,
 			"  wait_ms: 5000",
 			"  request_timeout_ms: 60000",
 			"",
@@ -265,6 +288,7 @@ async function runJob(
 		ANVILKIT_LAUNCH_ID: env.launchId,
 		ANVILKIT_ATTEMPT_ID: env.attemptId,
 		ANVILKIT_LAUNCH_ENVELOPE: JSON.stringify(env),
+		ANVILKIT_LAUNCH_SECRET: options.secret ? options.secret(sidecar) : sidecar.secret,
 	});
 	try {
 		const code = await main();
@@ -277,6 +301,57 @@ async function runJob(
 }
 
 describe.skipIf(gate.skip)("the validator Job against a fake access sidecar", () => {
+	it("ends as an infrastructure failure when the sidecar answers without a proof of the launch secret", async () => {
+		gate.assert();
+		const archive = await heroArchive();
+		const { code, summary, sidecar } = await runJob(
+			{ inputs: [{ ...sourceInput, digest: digest(archive) }], component: { ...hero, sourceRevision: "42" } },
+			archive,
+			{ noProof: true },
+		);
+		expect(code).toBe(1);
+		expect(summary.outcome).toBe("infrastructure_failed");
+		expect(String(summary.error)).toMatch(/sidecar identity: GET \/v1\/scope answered 200 without a valid proof/);
+		// Nothing of the unproven answer was used: no load, no transfer, no result.
+		expect(sidecar.loads).toBe(0);
+		expect(sidecar.transfers).toEqual([]);
+		expect(sidecar.results).toEqual([]);
+	});
+
+	it("is refused by the sidecar (403 PEER_TOKEN_MISMATCH) under a wrong launch secret, and the run fails", async () => {
+		gate.assert();
+		const archive = await heroArchive();
+		const { code, summary, sidecar } = await runJob(
+			{ inputs: [{ ...sourceInput, digest: digest(archive) }], component: { ...hero, sourceRevision: "42" } },
+			archive,
+			{ secret: (s) => `${s.secret.slice(0, 63)}${s.secret.endsWith("0") ? "1" : "0"}` },
+		);
+		expect(code).toBe(1);
+		expect(summary.outcome).toBe("infrastructure_failed");
+		// The refusal carries no proof, so the client reports the sidecar's identity, not the code.
+		expect(String(summary.error)).toMatch(/GET \/v1\/scope answered 403 without a valid proof/);
+		expect(sidecar.refused).toEqual(["PEER_TOKEN_MISMATCH"]);
+		expect(sidecar.loads).toBe(0);
+		expect(sidecar.results).toEqual([]);
+	});
+
+	it("refuses a launch without a well-formed launch secret before contacting the sidecar", async () => {
+		gate.assert();
+		const archive = await heroArchive();
+		for (const [what, secret] of [
+			["missing", ""],
+			["uppercase", "A".repeat(64)],
+			["short", "0".repeat(63)],
+		] as const) {
+			const { code, summary, sidecar } = await runJob({}, archive, { secret: () => secret });
+			expect(code, what).toBe(1);
+			expect(summary.outcome, what).toBe("infrastructure_failed");
+			expect(String(summary.error), what).toMatch(/ANVILKIT_LAUNCH_SECRET/);
+			expect(sidecar.refused, what).toEqual([]);
+			expect(sidecar.results, what).toEqual([]);
+		}
+	});
+
 	it("refuses a launch its profile does not admit, before any source is loaded (PROFILE_UNQUALIFIED)", async () => {
 		gate.assert();
 		const archive = await heroArchive();
