@@ -19,8 +19,9 @@
 // launch included), 1 when it could not (no scope, no authority, a layout
 // defect, a refused submission, a toolchain the profile does not freeze), 2
 // when the configuration file cannot be loaded.
-import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { BuildError, type BuildOutput, buildComponent } from "./build.js";
@@ -28,16 +29,27 @@ import { contractsDir, jobsSchemaId, parseStrictObject, validateAgainst } from "
 import { sha256 } from "./digest.js";
 import { InputError, unpackSourceArchive } from "./input.js";
 import type { StepIdentity } from "./isolation.js";
+import {
+	HEADER_PEER_NONCE,
+	HEADER_PEER_TOKEN,
+	HEADER_SIDECAR_PROOF,
+	isLaunchSecret,
+	newNonce,
+	peerToken,
+	proofMatches,
+	socketPathOf,
+} from "./peer.js";
 import { loadProfiles, ProfileError, type Profiles, packageRoot, verifyToolchain } from "./profiles.js";
 import { allocatedIdentity, type LaunchComponent, readSource, SourceError, type SourceRead } from "./source.js";
 import { type Certification, certify, type FailureCode, verdictFor } from "./validate.js";
 
 export interface JobConfig {
-	paths: { workspace: string; verdict: string; sockets: string; termination_log: string; fixed_source: string };
+	paths: { workspace: string; verdict: string; termination_log: string; fixed_source: string };
 	candidate: { identity: "setpriv" | "caller"; uid: number; gid: number };
 	/** The SSR harness identity (a UID of the validator's steps alone, never the candidate's or the sidecar's). */
 	harness: { uid: number; gid: number };
-	sidecar: { uid: number; wait_ms: number; request_timeout_ms: number };
+	/** The sidecar's identity and its trusted socket: an abstract-namespace name (`@…`, DEC-045), reached with the launch secret's token. */
+	sidecar: { uid: number; socket: string; wait_ms: number; request_timeout_ms: number };
 	observer: { identity: string };
 	host_checks: { ssr: boolean; browser: boolean };
 	/** The reviewed revision of the fixed component (paths.fixed_source) when the launch names no allocated identity; never a bound source's. */
@@ -193,6 +205,17 @@ class SidecarError extends Error {
 	}
 }
 
+/**
+ * The process on the trusted socket did not prove it holds the launch
+ * secret's token (DEC-045 B2): whatever it answered is discarded and the
+ * trusted flow ends as an infrastructure failure.
+ */
+export class SidecarProofError extends Error {
+	constructor(method: string, route: string, status: number) {
+		super(`sidecar identity: ${method} ${route} answered ${status} without a valid proof of the launch secret`);
+	}
+}
+
 function loadConfig(): JobConfig {
 	const file = process.env.ANVILKIT_VALIDATOR_CONFIG ?? "/etc/anvilkit/anvilkit-validator/config.yaml";
 	const doc = parseYaml(readFileSync(file, "utf8"), { uniqueKeys: true }) as Partial<JobConfig>;
@@ -200,23 +223,32 @@ function loadConfig(): JobConfig {
 		paths: {
 			workspace: "/workspace",
 			verdict: "/anvilkit/verdict",
-			sockets: "/run/anvilkit/sockets",
 			termination_log: "/dev/termination-log",
 			fixed_source: path.join(packageRoot, "fixtures", "component", "hero"),
 			...(doc.paths ?? {}),
 		},
 		candidate: { identity: "setpriv", uid: 10001, gid: 10001, ...(doc.candidate ?? {}) },
 		harness: { uid: 10003, gid: 10003, ...(doc.harness ?? {}) },
-		sidecar: { uid: 10002, wait_ms: 60_000, request_timeout_ms: 60_000, ...(doc.sidecar ?? {}) },
+		sidecar: {
+			uid: 10002,
+			socket: "@anvilkit/trusted",
+			wait_ms: 60_000,
+			request_timeout_ms: 60_000,
+			...(doc.sidecar ?? {}),
+		},
 		observer: { identity: "anvilkit-validator-supervisor", ...(doc.observer ?? {}) },
 		host_checks: { ssr: true, browser: true, ...(doc.host_checks ?? {}) },
 		source_revision: doc.source_revision ?? "1",
 		validator_profile: doc.validator_profile ?? "validator-dev-v1",
 	};
-	for (const k of ["launch_id", "attempt_id", "launch_envelope"]) {
+	for (const k of ["launch_id", "attempt_id", "launch_envelope", "launch_secret"]) {
 		if (k in (doc as Record<string, unknown>))
 			throw new Error(`config: ${k} is a launch fact and is refused inside the file`);
 	}
+	if ("sockets" in ((doc.paths ?? {}) as Record<string, unknown>))
+		throw new Error("config: paths.sockets is gone (DEC-045); the sidecar's trusted socket is sidecar.socket");
+	if (typeof c.sidecar.socket !== "string" || !c.sidecar.socket.startsWith("@") || c.sidecar.socket.length < 2)
+		throw new Error("config: sidecar.socket must be an abstract-namespace socket name (@…)");
 	// The stop kills every process of a step UID: the step UIDs are the
 	// validator's alone, distinct from each other, from root and from the sidecar.
 	const uids = [c.candidate.uid, c.harness.uid];
@@ -232,51 +264,70 @@ function parseEnvelope(raw: string): Envelope {
 	return doc as unknown as Envelope;
 }
 
+/**
+ * The client of the sidecar's trusted socket (DD-03 §5, DEC-045 B2): an
+ * abstract-namespace name reached with the launch secret's trusted token on
+ * every request, a fresh nonce per request, and the sidecar's proof over
+ * that nonce checked on every answer before anything of it is used. One
+ * request per connection; no descriptor is ever delegated.
+ */
 class Sidecar {
-	constructor(
-		private readonly socket: string,
-		private readonly timeoutMs: number,
-	) {}
+	private readonly socketPath: string;
 
-	/** The DD-03 layout of the sockets directory and the trusted socket, verified before anything is sent. */
-	verifyLayout(sidecarUID: number): void {
-		const dir = path.dirname(this.socket);
-		const d = lstatSync(dir);
-		if (!d.isDirectory() || d.uid !== sidecarUID || d.gid !== 0 || (d.mode & 0o777) !== 0o711) {
-			throw new Error(`${dir} is ${d.uid}:${d.gid} ${(d.mode & 0o777).toString(8)}, expected ${sidecarUID}:0 711`);
-		}
-		const s = lstatSync(this.socket);
-		if (!s.isSocket() || s.uid !== sidecarUID || s.gid !== 0 || (s.mode & 0o777) !== 0o660) {
-			throw new Error(
-				`${this.socket} is ${s.uid}:${s.gid} ${(s.mode & 0o777).toString(8)}, expected a ${sidecarUID}:0 660 socket`,
-			);
-		}
+	constructor(
+		readonly socket: string,
+		private readonly token: string,
+		private readonly timeoutMs: number,
+	) {
+		this.socketPath = socketPathOf(socket);
 	}
 
+	/** Waits until the sidecar accepts a connection on its trusted name (a refused connection: not up yet). */
 	async waitFor(ms: number): Promise<void> {
 		const until = Date.now() + ms;
 		while (Date.now() < until) {
-			try {
-				if (lstatSync(this.socket).isSocket()) return;
-			} catch {
-				// not yet
-			}
+			const up = await new Promise<boolean>((resolve) => {
+				const c = net.connect({ path: this.socketPath });
+				c.once("connect", () => {
+					c.destroy();
+					resolve(true);
+				});
+				c.once("error", () => resolve(false));
+			});
+			if (up) return;
 			await new Promise((r) => setTimeout(r, 250));
 		}
-		throw new Error(`trusted socket ${this.socket} did not appear within ${ms} ms`);
+		throw new Error(`trusted socket ${this.socket} did not accept a connection within ${ms} ms`);
+	}
+
+	/** The peer binding of one request: its token and a fresh nonce; the answer's proof is checked against them. */
+	private binding(): { nonce: string; headers: Record<string, string> } {
+		const nonce = newNonce();
+		return { nonce, headers: { [HEADER_PEER_TOKEN]: this.token, [HEADER_PEER_NONCE]: nonce } };
 	}
 
 	request<T>(method: string, route: string, headers: Record<string, string>, body?: Buffer): Promise<T> {
+		const { nonce, headers: peer } = this.binding();
 		return new Promise((resolve, reject) => {
 			const req = http.request(
 				{
-					socketPath: this.socket,
+					socketPath: this.socketPath,
 					method,
 					path: route,
-					headers: { ...headers, connection: "close", ...(body ? { "content-length": String(body.byteLength) } : {}) },
+					headers: {
+						...headers,
+						...peer,
+						connection: "close",
+						...(body ? { "content-length": String(body.byteLength) } : {}),
+					},
 					timeout: this.timeoutMs,
 				},
 				(res) => {
+					if (!proofMatches(this.token, nonce, res.headers[HEADER_SIDECAR_PROOF])) {
+						res.resume();
+						reject(new SidecarProofError(method, route, res.statusCode ?? 0));
+						return;
+					}
 					const chunks: Buffer[] = [];
 					res.on("data", (c: Buffer) => chunks.push(c));
 					res.on("end", () => {
@@ -315,6 +366,8 @@ class Sidecar {
 				const a = await this.request<{ scope: Scope }>("GET", "/v1/scope", {});
 				return a.scope;
 			} catch (err) {
+				// A process that cannot prove the launch secret is not the sidecar: nothing to wait for.
+				if (err instanceof SidecarProofError) throw err;
 				if (err instanceof SidecarError && err.code !== "SCOPE_UNAVAILABLE" && err.code !== "DEPENDENCY_UNAVAILABLE")
 					throw err;
 				log(`waiting for the execution scope: ${(err as Error).message}`);
@@ -332,16 +385,22 @@ class Sidecar {
 
 	/** Reads the staged bytes of an input from the trusted socket. */
 	readInput(name: string, maxBytes: number): Promise<Buffer> {
+		const { nonce, headers: peer } = this.binding();
 		return new Promise((resolve, reject) => {
 			const req = http.request(
 				{
-					socketPath: this.socket,
+					socketPath: this.socketPath,
 					method: "GET",
 					path: `/v1/inputs/${name}`,
-					headers: { connection: "close" },
+					headers: { ...peer, connection: "close" },
 					timeout: this.timeoutMs,
 				},
 				(res) => {
+					if (!proofMatches(this.token, nonce, res.headers[HEADER_SIDECAR_PROOF])) {
+						res.resume();
+						reject(new SidecarProofError("GET", `/v1/inputs/${name}`, res.statusCode ?? 0));
+						return;
+					}
 					const chunks: Buffer[] = [];
 					let size = 0;
 					res.on("data", (c: Buffer) => {
@@ -490,8 +549,17 @@ export async function main(): Promise<number> {
 		const launchID = process.env.ANVILKIT_LAUNCH_ID ?? "";
 		const attemptID = process.env.ANVILKIT_ATTEMPT_ID ?? "";
 		const rawEnvelope = process.env.ANVILKIT_LAUNCH_ENVELOPE ?? "";
-		if (!launchID || !attemptID || !rawEnvelope)
-			throw new Error("ANVILKIT_LAUNCH_ID, ANVILKIT_ATTEMPT_ID and ANVILKIT_LAUNCH_ENVELOPE are required");
+		// The launch secret (DEC-045 B2) is a launch fact like the others: it
+		// comes from the Job template's Secret reference only, is validated by
+		// shape and never logged; only its derived trusted token leaves here.
+		const launchSecret = process.env.ANVILKIT_LAUNCH_SECRET ?? "";
+		if (!launchID || !attemptID || !rawEnvelope || !launchSecret)
+			throw new Error(
+				"ANVILKIT_LAUNCH_ID, ANVILKIT_ATTEMPT_ID, ANVILKIT_LAUNCH_ENVELOPE and ANVILKIT_LAUNCH_SECRET are required",
+			);
+		if (!isLaunchSecret(launchSecret))
+			throw new Error("ANVILKIT_LAUNCH_SECRET is not a launch secret (64 lowercase hex characters)");
+		const trustedToken = peerToken(launchSecret, "trusted");
 		const env = parseEnvelope(rawEnvelope);
 		if (env.launchId !== launchID || env.attemptId !== attemptID)
 			throw new Error(
@@ -515,9 +583,8 @@ export async function main(): Promise<number> {
 		rmSync(workDir, { recursive: true, force: true });
 		mkdirSync(workDir, { mode: 0o755 });
 
-		const sidecar = new Sidecar(path.join(cfg.paths.sockets, "trusted.sock"), cfg.sidecar.request_timeout_ms);
+		const sidecar = new Sidecar(cfg.sidecar.socket, trustedToken, cfg.sidecar.request_timeout_ms);
 		await sidecar.waitFor(Math.min(cfg.sidecar.wait_ms, Math.max(1_000, deadline.getTime() - Date.now())));
-		sidecar.verifyLayout(cfg.sidecar.uid);
 		const scope = await sidecar.awaitScope(deadline, log);
 		if (
 			scope.attemptId !== env.attemptId ||
