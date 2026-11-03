@@ -61,7 +61,7 @@ RUN apt-get update \
  && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
       /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
  && groupadd -g 10001 candidate && useradd -M -u 10001 -g 10001 -s /usr/sbin/nologin candidate \
- && mkdir -p /anvilkit/validator /anvilkit/contracts/components /anvilkit/contracts/jobs /anvilkit/verdict /workspace /run/anvilkit /etc/anvilkit/anvilkit-validator
+ && mkdir -p /anvilkit/validator /anvilkit/contracts/components /anvilkit/contracts/jobs /anvilkit/verdict /workspace /etc/anvilkit/anvilkit-validator
 WORKDIR /anvilkit/validator
 COPY --from=build /src/node_modules ./node_modules
 COPY --from=build /src/dist ./dist

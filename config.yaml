@@ -2,12 +2,12 @@
 # image at /etc/anvilkit/anvilkit-validator/config.yaml, root-owned and
 # unreadable by the candidate UID). Precedence is defaults < this file; the
 # launch facts come only from the Job template's environment
-# (ANVILKIT_LAUNCH_ID, ANVILKIT_ATTEMPT_ID, ANVILKIT_LAUNCH_ENVELOPE) and are
+# (ANVILKIT_LAUNCH_ID, ANVILKIT_ATTEMPT_ID, ANVILKIT_LAUNCH_ENVELOPE and the
+# per-launch ANVILKIT_LAUNCH_SECRET of DEC-045, a Secret reference) and are
 # refused inside this file.
 paths:
   workspace: /workspace              # emptyDir; the chain works under /workspace/w
   verdict: /anvilkit/verdict         # emptyDir; chmod 0700 by this process before anything runs
-  sockets: /run/anvilkit/sockets     # the sidecar's directory (read-only mount here)
   termination_log: /dev/termination-log
   fixed_source: /anvilkit/validator/fixtures/component/hero   # the reviewed fixed component (root 0700)
 candidate:
@@ -19,6 +19,7 @@ harness:                             # the protected SSR harness judges the rend
   gid: 10003
 sidecar:
   uid: 10002
+  socket: "@anvilkit/trusted"        # the sidecar's trusted socket: an abstract-namespace name inside the Pod (DEC-045; no shared volume); every request carries the launch secret's trusted token and every answer the sidecar's proof
   wait_ms: 60000
   request_timeout_ms: 60000
 observer:
