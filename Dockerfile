@@ -48,7 +48,7 @@ FROM node:24.19.0-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930
 # point release (CVE-2026-13221/42496/8376), pinned, and so are the base's
 # gzip (CVE-2026-41992), libpcre2 (CVE-2026-86145/89157/89161/103111),
 # SQLite (CVE-2026-11822/11824) and apt with its libapt-pkg
-# (CVE-2026-109518) fixes. libxml2's
+# (CVE-2026-109518) and zlib1g (CVE-2026-76844/85091, B-013) fixes. libxml2's
 # CVE-2026-6653 has no fixed version in Debian 13; it arrives through
 # Chromium's libgbm1 -> mesa-libgallium -> libllvm19 and is removed below.
 # The Job runs node and the baked toolchain only: the base's
@@ -58,7 +58,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux ca-certificates \
  && apt-get install -y --no-install-recommends --only-upgrade perl-base=5.40.1-6+deb13u1 \
       gzip=1.13-1+deb13u1 libpcre2-8-0=10.46-1~deb13u3 libsqlite3-0=3.46.1-7+deb13u2 \
-      apt=3.0.4 libapt-pkg7.0=3.0.4 \
+      apt=3.0.4 libapt-pkg7.0=3.0.4 zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
  && rm -rf /var/lib/apt/lists/* \
  && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
       /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
