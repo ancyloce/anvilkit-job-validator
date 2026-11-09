@@ -16,9 +16,8 @@
 	display: inline-block;
 	width: 32px;
 	height: 32px;
-	background-image: url("../assets/mark.svg");
-	background-size: contain;
-	background-repeat: no-repeat;
+	border-radius: 6px;
+	background: rgb(37, 99, 235);
 }
 .ak-hero__title {
 	margin: 8px 0 4px;

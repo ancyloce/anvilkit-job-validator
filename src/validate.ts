@@ -613,6 +613,22 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 				if (!decl.styles.includes(imported.slice("dist/".length)))
 					throw new CheckFailure("MISSING_CSS", `${rel} imports ${imported}, which is not a declared stylesheet`);
 			}
+			// Delivery D-2: the preview frame and the Studio's release loader
+			// install a stylesheet from its verified bytes as a blob URL, and no
+			// artifact class carries a stylesheet's resource to them, so a
+			// relative reference resolves nowhere. Until a verified resource
+			// class is bound, published and loaded end to end, a reference the
+			// review above accepted (relative, inside the package, shipped) is
+			// refused here; a remote, absolute, escaping or unshipped one keeps
+			// its own refusal above.
+			if (refs.resources.length)
+				throw new CheckFailure(
+					"MISSING_CSS",
+					`${rel} references ${refs.resources.map((p) => p.slice("dist/".length)).join(", ")}; ` +
+						"a stylesheet references no file through url(), src() or image-set(): the preview and release loaders " +
+						"install it from its verified bytes and load no stylesheet resource; " +
+						"draw it in CSS or render an inline <svg> in JSX",
+				);
 			stylesheets.set(rel, refs);
 			css.push({ path: rel, digest: entry.digest, sizeBytes: entry.sizeBytes });
 		}

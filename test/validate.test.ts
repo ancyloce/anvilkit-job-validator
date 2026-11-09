@@ -120,7 +120,7 @@ describe("independent certification of the fixed component", () => {
 		expect(observed.stylesheets[0]?.disabled).toBe(false);
 		expect(observed.stylesheets[0]?.matchedRules).toBeGreaterThan(0);
 		expect(observed.stylesheets[0]?.effectiveRules).toBeGreaterThan(0);
-		expect(observed.stylesheets[0]?.resources).toEqual([{ url: "/candidate/dist/assets/mark.svg", loaded: true }]);
+		expect(observed.stylesheets[0]?.resources).toEqual([]);
 		expect(observed.nonce).toEqual({ field: "title", rendered: true });
 		expect(observed.interaction).toEqual({
 			buttons: 1,
@@ -134,7 +134,7 @@ describe("independent certification of the fixed component", () => {
 		expect(observed.pageErrors).toEqual([]);
 		const scripts = browser.pageRequests.filter((r) => r.resourceType === "script").map((r) => new URL(r.url).pathname);
 		expect(scripts.filter((p) => !p.startsWith("/host/"))).toEqual(["/candidate/dist/index.js"]);
-		expect(browser.pageRequests.some((r) => new URL(r.url).pathname === "/candidate/dist/assets/mark.svg")).toBe(true);
+		expect(browser.pageRequests.some((r) => new URL(r.url).pathname === "/candidate/dist/assets/mark.svg")).toBe(false);
 		const page = browser.page as { renderers: string[]; resolved: Record<string, string> };
 		expect(page.renderers).toHaveLength(1);
 		expect(page.resolved.react).toBe("/host/react.js");

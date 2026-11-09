@@ -15,8 +15,10 @@ import hero from "@anvilkit/hero-fixed";
 const config = { components: { Hero: hero } };
 ```
 
-Load `styles/hero.css` before importing the module; the stylesheet references
-`assets/mark.svg` relatively, so ship both directories together. Editable
+Load `styles/hero.css` before importing the module. The stylesheet references
+no file: the mark is drawn in CSS, because a host that installs the stylesheet
+from its verified bytes loads no stylesheet resource. `assets/mark.svg` ships
+in the npm package (`./assets/*`) for a consumer that bundles it. Editable
 fields: `title` (text), `subtitle` (textarea), `align` (`left` or `center`),
 `ctaLabel` (text). The component uses the host's React (`react`,
 `react/jsx-runtime`) and never bundles its own.
