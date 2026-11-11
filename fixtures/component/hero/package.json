@@ -4,7 +4,7 @@
   "description": "Reviewed fixed Hero component of the P10 certification chain (DEVELOPMENT fixture).",
   "license": "MIT",
   "dependencies": {
-    "@puckeditor/core": "0.23.0",
+    "@puckeditor/core": "0.24.0",
     "react": "19.3.0"
   }
 }

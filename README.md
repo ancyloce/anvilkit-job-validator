@@ -103,7 +103,7 @@ digests and the protected fixture digests after a reviewed edit):
 
 - `build-support-dev-v1.json` — the contract's `buildSupportProfile`: Node
   24.19.0, pnpm 12.3.4, TypeScript 5.9.3, React 19.3.0, Puck
-  (`@puckeditor/core`) 0.23.0, the allowed dependencies, the Host ABI id.
+  (`@puckeditor/core`) 0.24.0, the allowed dependencies, the Host ABI id.
   The versions are what this package's lockfile installs; the loader
   compares them with the running toolchain and refuses a difference
   (`PROFILE_UNQUALIFIED`).

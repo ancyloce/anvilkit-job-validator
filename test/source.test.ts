@@ -36,7 +36,7 @@ describe("the fixed complete source", () => {
 		expect(validateAgainst(`${componentsSchemaId}#/$defs/sourceManifest`, read.manifest)).toBeUndefined();
 		expect(read.manifest.entry).toBe("src/index.tsx");
 		expect(read.manifest.styles).toEqual(["styles/hero.css"]);
-		expect(read.manifest.dependencies).toEqual({ "@puckeditor/core": "0.23.0", react: "19.3.0" });
+		expect(read.manifest.dependencies).toEqual({ "@puckeditor/core": "0.24.0", react: "19.3.0" });
 		expect(read.manifest.files.map((f) => f.path)).toEqual([
 			"README.md",
 			"assets/mark.svg",
@@ -143,10 +143,10 @@ describe("source refusals", () => {
 		pkg.dependencies.lodash = "4.17.21";
 		writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg));
 		fails(dir, "CANDIDATE_BUILD_FAILED", /dependency lodash is not supported by profile build-support-dev-v1/);
-		pkg.dependencies = { "@puckeditor/core": "0.23.0", react: "19.3.0", "react-dom": "19.3.0" };
+		pkg.dependencies = { "@puckeditor/core": "0.24.0", react: "19.3.0", "react-dom": "19.3.0" };
 		writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg));
 		fails(dir, "CANDIDATE_BUILD_FAILED", /pnpm-lock.yaml: locked dependencies .* differ from the declared/);
-		pkg.dependencies = { "@puckeditor/core": "0.23.0", react: "^19.0.0" };
+		pkg.dependencies = { "@puckeditor/core": "0.24.0", react: "^19.0.0" };
 		writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg));
 		fails(dir, "CANDIDATE_BUILD_FAILED", /must pin an exact version/);
 	});

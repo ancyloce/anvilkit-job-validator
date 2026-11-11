@@ -68,7 +68,7 @@ describe("the protected build of the fixed source", () => {
 			anvilkit: Record<string, unknown>;
 			exports: Record<string, unknown>;
 		};
-		expect(pkg.peerDependencies).toEqual({ "@puckeditor/core": "0.23.0", react: "19.3.0" });
+		expect(pkg.peerDependencies).toEqual({ "@puckeditor/core": "0.24.0", react: "19.3.0" });
 		expect(pkg.anvilkit.sourceDigest).toBe(source.manifest.manifestDigest);
 		expect(pkg.anvilkit.buildProfileDigest).toBe(profiles.build.profileDigest);
 		expect(Object.keys(pkg.exports)).toEqual([".", "./styles/*", "./assets/*", "./package.json"]);

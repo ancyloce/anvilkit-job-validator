@@ -17,7 +17,7 @@
     "certify": "tsx src/cli.ts"
   },
   "dependencies": {
-    "@puckeditor/core": "0.23.0",
+    "@puckeditor/core": "0.24.0",
     "@rollup/plugin-commonjs": "29.0.3",
     "@rollup/plugin-node-resolve": "16.0.3",
     "@rollup/plugin-replace": "6.0.3",
