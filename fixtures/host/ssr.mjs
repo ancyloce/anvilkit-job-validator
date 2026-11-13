@@ -254,6 +254,12 @@ async function renderChild(io) {
 		if (!config.fields || typeof config.fields !== "object") throw new Error("default export has no fields");
 		if (mod.config !== config) throw new Error("named export config is not the default export");
 		frame.meta.fields = Object.keys(config.fields).sort();
+		frame.meta.fieldTypes = Object.fromEntries(
+			frame.meta.fields.map((name) => [
+				name,
+				typeof config.fields[name]?.type === "string" ? config.fields[name].type : null,
+			]),
+		);
 		const base = config.defaultProps ?? {};
 		const direct = renderToString(
 			React.createElement(config.render, {
@@ -476,6 +482,27 @@ function judge(io) {
 			throw new Error(
 				`fields [${(result.fields ?? []).join(", ")}] differ from the declared editable fields [${wantFields.join(", ")}]`,
 			);
+		}
+		// Each declared editable field has the type its Puck field has: the observer
+		// judges defaults and probes by the declared type (the v0.1.36 complex
+		// component declared radio, select, external and custom fields as text and
+		// failed C16 on a choice's default). The child's types are candidate data:
+		// only a type-like word is repeated in the message.
+		if (io.fieldTypes && typeof io.fieldTypes === "object") {
+			const got =
+				meta.fieldTypes && typeof meta.fieldTypes === "object" && !Array.isArray(meta.fieldTypes)
+					? meta.fieldTypes
+					: {};
+			const shown = (t) => (typeof t === "string" && /^[a-z]{1,16}$/.test(t) ? t : "no field type");
+			const differ = wantFields
+				.filter((name) => got[name] !== io.fieldTypes[name])
+				.map(
+					(name) => `${name} is ${shown(got[name])} in the Puck config and ${io.fieldTypes[name]} in component.json`,
+				);
+			if (differ.length)
+				throw new Error(
+					`field types differ from the declared editable fields: ${differ.join("; ")}; each editableFields type is the type of the Puck field of that name (a fixed choice is select or radio in both)`,
+				);
 		}
 		// The observer names the field that owns each default and the remedy
 		// (DEC-043); both are its data, appended to the judge's own sentence.
