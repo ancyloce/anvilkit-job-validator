@@ -650,6 +650,7 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 	// processes under the step identities, and only when the static checks
 	// passed.
 	const fieldNames = decl.editableFields.map((f) => f.name);
+	const fieldTypes = Object.fromEntries(decl.editableFields.map((f) => [f.name, f.type]));
 	const defaultProps: Record<string, unknown> = {};
 	for (const f of decl.editableFields) if (f.default !== undefined) defaultProps[f.name] = f.default;
 	const textFields = decl.editableFields.filter(
@@ -767,6 +768,7 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					modulePath: build.browser.file,
 					moduleDigest,
 					fieldNames,
+					fieldTypes,
 					expectedTexts,
 					defaultFields,
 					remedy: renderedDefaultRemedy,
