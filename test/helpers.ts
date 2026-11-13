@@ -127,7 +127,13 @@ export function forgingModule(mode: "throw" | "frame" | "plant"): string {
 		schemaVersion: 1,
 		direct: html,
 		puck: html,
-		meta: { errors: [], exports: report.exports, fields: report.fields, reactVersion: "19.3.0" },
+		meta: {
+			errors: [],
+			exports: report.exports,
+			fields: report.fields,
+			fieldTypes: { align: "radio", ctaLabel: "text", subtitle: "textarea", title: "text" },
+			reactVersion: "19.3.0",
+		},
 	};
 	return `import { createElement } from "react";
 if (typeof process !== "undefined" && typeof window === "undefined") {

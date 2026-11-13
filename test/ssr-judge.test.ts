@@ -84,6 +84,68 @@ describe("the SSR judge's default-text match (B1 run 5, C1)", () => {
 	});
 });
 
+describe("the SSR judge's field types: each declared editable field has its Puck field's type (2026-11-13)", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) removeTree(d);
+	});
+
+	/** Two fields that render their defaults; the child reports `configTypes`, component.json declares `declared`. */
+	function inputs(configTypes: Record<string, unknown>, declared: Record<string, string>) {
+		const dir = mkdtempSync(path.join(tmpdir(), "anvilkit-ssr-types-"));
+		dirs.push(dir);
+		const modulePath = path.join(dir, "module.js");
+		const bytes = Buffer.from("export default {};\n");
+		writeFileSync(modulePath, bytes);
+		const nonce = "anvilkit-0123456789abcdef";
+		const direct = renderToString(createElement("p", null, "Plans"));
+		const puck = renderToString(createElement("div", null, nonce));
+		return {
+			modulePath,
+			moduleDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+			fieldNames: ["heading", "perspective"],
+			fieldTypes: declared,
+			expectedTexts: ["Plans"],
+			puckExpectedTexts: [],
+			nonce,
+			frame: JSON.stringify({
+				schemaVersion: 1,
+				meta: { fields: ["heading", "perspective"], fieldTypes: configTypes, reactVersion: "19.3.0" },
+				direct,
+				puck,
+			}),
+			renderExit: "exit 0, signal null",
+		};
+	}
+
+	it("accepts declarations whose types are the Puck config's", async () => {
+		const verdict = await judge(
+			inputs({ heading: "text", perspective: "radio" }, { heading: "text", perspective: "radio" }),
+		);
+		expect(verdict.errors).toEqual([]);
+		expect(verdict.ok).toBe(true);
+	});
+
+	it("refuses a choice declared as text that the Puck config makes a radio field, naming both types and the remedy", async () => {
+		const verdict = await judge(
+			inputs({ heading: "text", perspective: "radio" }, { heading: "text", perspective: "text" }),
+		);
+		expect(verdict.ok).toBe(false);
+		expect(verdict.errors).toEqual([
+			"field types differ from the declared editable fields: perspective is radio in the Puck config and text in component.json; each editableFields type is the type of the Puck field of that name (a fixed choice is select or radio in both)",
+		]);
+	});
+
+	it("never repeats a type value that is not a type-like word: the child's types are candidate data", async () => {
+		const verdict = await judge(
+			inputs({ heading: "text", perspective: "<b>radio</b>" }, { heading: "text", perspective: "radio" }),
+		);
+		expect(verdict.ok).toBe(false);
+		expect(verdict.errors[0]).toContain("perspective is no field type in the Puck config and radio in component.json");
+		expect(verdict.errors[0]).not.toContain("<b>");
+	});
+});
+
 describe("the SSR judge's field sinks (the field-sinks check; B1 run 10's security review)", () => {
 	const dirs: string[] = [];
 	afterEach(() => {
