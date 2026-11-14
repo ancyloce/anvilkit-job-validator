@@ -363,3 +363,144 @@ describe("the SSR judge's field sinks (the field-sinks check; B1 run 10's securi
 		expect(failing.errors).toEqual([]);
 	});
 });
+
+describe("the SSR judge's defaults: defaultProps carries the declared defaults (C11, the v0.1.38 footer)", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) removeTree(d);
+	});
+
+	/** Runs the render child (`ssr.mjs --render`) as the validator does and returns the frame it wrote on fd 3. */
+	function render(io: Record<string, unknown>): Promise<string> {
+		return new Promise((resolve, reject) => {
+			const child = spawn(process.execPath, [ssrScript, "--render"], { stdio: ["pipe", "ignore", "pipe", "pipe"] });
+			const out: Buffer[] = [];
+			const err: Buffer[] = [];
+			child.stdio[3]?.on("data", (b: Buffer) => out.push(b));
+			child.stderr?.on("data", (b: Buffer) => err.push(b));
+			child.on("error", reject);
+			child.on("close", (code) => {
+				if (code !== 0) return reject(new Error(`render exited ${code}: ${Buffer.concat(err).toString("utf8")}`));
+				resolve(Buffer.concat(out).toString("utf8"));
+			});
+			child.stdin?.end(JSON.stringify(io));
+		});
+	}
+
+	/**
+	 * A component module without imports (its render returns a string) whose
+	 * config has a text field `heading` and an array field `metrics` with the
+	 * given defaultProps source text; rendered by the real render child with the
+	 * declared defaults as its props, then judged against `declared`.
+	 */
+	async function renderAndJudge(defaultPropsSource: string, declared: Record<string, unknown>) {
+		const dir = mkdtempSync(path.join(tmpdir(), "anvilkit-ssr-defaults-"));
+		dirs.push(dir);
+		const modulePath = path.join(dir, "module.mjs");
+		const bytes = Buffer.from(
+			[
+				"const config = {",
+				'\tfields: { heading: { type: "text" }, metrics: { type: "array", arrayFields: { label: { type: "text" } } } },',
+				`\tdefaultProps: ${defaultPropsSource},`,
+				'\trender: ({ heading, metrics }) => String(heading ?? "") + " (" + (Array.isArray(metrics) ? metrics.length : 0) + " metrics)",',
+				"};",
+				"export { config };",
+				"export default config;",
+				"",
+			].join("\n"),
+		);
+		writeFileSync(modulePath, bytes);
+		const frame = await render({
+			modulePath,
+			puckType: "Panel",
+			directProps: declared,
+			puckProps: declared,
+			probeProps: [],
+		});
+		return judge({
+			modulePath,
+			moduleDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+			fieldNames: ["heading", "metrics"],
+			fieldTypes: { heading: "text", metrics: "array" },
+			declaredDefaults: declared,
+			expectedTexts: [],
+			puckExpectedTexts: [],
+			nonce: null,
+			frame,
+			renderExit: "exit 0, signal null",
+		});
+	}
+
+	it("accepts defaultProps equal to the declared defaults, member order aside", async () => {
+		const verdict = await renderAndJudge('{ heading: "Plans", metrics: [{ value: 3, label: "Uptime" }] }', {
+			heading: "Plans",
+			metrics: [{ label: "Uptime", value: 3 }],
+		});
+		expect(verdict.errors).toEqual([]);
+		expect(verdict.ok).toBe(true);
+	});
+
+	it("refuses metrics declared empty beside defaultProps that hold them, naming the field and the remedy", async () => {
+		const verdict = await renderAndJudge(
+			'{ heading: "Plans", metrics: [{ label: "Uptime" }, { label: "Latency" }, { label: "Errors" }, { label: "Load" }] }',
+			{ heading: "Plans", metrics: [] },
+		);
+		expect(verdict.ok).toBe(false);
+		expect(verdict.errors).toEqual([
+			"default values differ from the declared defaults: metrics is an array of 4 items in defaultProps and an empty array in component.json; each declared field's defaultProps value is its editableFields default, the same JSON value, and a field without a declared default has none in defaultProps (C11): the validator renders and judges the declared defaults, so they must be the component's first render",
+		]);
+	});
+
+	it("refuses a default that only defaultProps carries: the observer would never judge it (C16)", async () => {
+		const verdict = await renderAndJudge('{ heading: "/terms", metrics: [] }', { metrics: [] });
+		expect(verdict.ok).toBe(false);
+		expect(verdict.errors[0]).toContain("heading is a string in defaultProps and no default in component.json");
+	});
+
+	it("refuses a declared default that defaultProps lacks, and one of another JSON type", async () => {
+		const verdict = await renderAndJudge('{ metrics: "[]" }', { heading: "Plans", metrics: [] });
+		expect(verdict.ok).toBe(false);
+		expect(verdict.errors[0]).toContain(
+			"heading is no default in defaultProps and a string in component.json; metrics is a string in defaultProps and an empty array in component.json",
+		);
+	});
+
+	it("refuses a default that is not JSON, and a defaultProps that is not an object", async () => {
+		const fn = await renderAndJudge('{ heading: "Plans", metrics: () => [] }', { heading: "Plans", metrics: [] });
+		expect(fn.errors[0]).toContain(
+			"metrics is a value that is not JSON in defaultProps and an empty array in component.json",
+		);
+		const notObject = await renderAndJudge('"Plans"', { heading: "Plans", metrics: [] });
+		expect(notObject.ok).toBe(false);
+		expect(notObject.errors[0]).toContain("default export's defaultProps is not an object");
+	});
+
+	it("never repeats a description that is not one of its own phrases: the child's frame is candidate data", async () => {
+		const bytes = Buffer.from("export default {};\n");
+		const dir = mkdtempSync(path.join(tmpdir(), "anvilkit-ssr-defaults-"));
+		dirs.push(dir);
+		const modulePath = path.join(dir, "module.js");
+		writeFileSync(modulePath, bytes);
+		const verdict = await judge({
+			modulePath,
+			moduleDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+			fieldNames: ["heading"],
+			declaredDefaults: { heading: "Plans" },
+			expectedTexts: [],
+			puckExpectedTexts: [],
+			nonce: null,
+			frame: JSON.stringify({
+				schemaVersion: 1,
+				meta: { fields: ["heading"], defaults: { heading: { digest: "sha256:00", kind: "<b>a string</b>" } } },
+				direct: "<p>Plans</p>",
+				puck: "<div>Plans</div>",
+			}),
+			renderExit: "exit 0, signal null",
+		});
+		expect(verdict.ok).toBe(false);
+		expect(verdict.errors[0]).toContain(
+			"heading is an undescribed value in defaultProps and a string in component.json",
+		);
+		expect(verdict.errors[0]).not.toContain("<b>");
+	});
+});

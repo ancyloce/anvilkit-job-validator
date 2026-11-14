@@ -769,6 +769,9 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					moduleDigest,
 					fieldNames,
 					fieldTypes,
+					// component.json's defaults (absent when undeclared), which the
+					// config's defaultProps must hold (C11)
+					declaredDefaults: defaultProps,
 					expectedTexts,
 					defaultFields,
 					remedy: renderedDefaultRemedy,

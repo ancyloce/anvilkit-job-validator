@@ -52,7 +52,7 @@
     "fixtures/host/browser/host.tsx": "sha256:138885a64008ed5fb4dca78c704f4ad7c95480c49be98e46176123d82ae25668",
     "fixtures/host/browser/index.html": "sha256:95d146f87623c4828d5906169fc7ca122023c0d2def920630f9b1475f0bf7b6c",
     "fixtures/host/browser/observer.js": "sha256:07163377cccf7ddf5f539058bac95bf5e94d5c645d23982f6d020c3e0c8ba6ee",
-    "fixtures/host/ssr.mjs": "sha256:32aecaf5a537b38c0264e68a9f76d9558ffd9068b8b739aea77eef2fd6d8ef0e"
+    "fixtures/host/ssr.mjs": "sha256:cc6244605005c369aea30832a06b81db165f80096c7bfcc75353181f38b0b136"
   },
   "limits": {
     "maxSourceFiles": 4096,
@@ -64,5 +64,5 @@
     "buildTimeoutMs": 180000,
     "hostCheckTimeoutMs": 120000
   },
-  "profileDigest": "sha256:9473b558bc44b5b463131e17582f53c11c4adc98c7c92cb7692f90cc31f8d413"
+  "profileDigest": "sha256:7b704fb1d826d38b73834c361442afaa44aa42636c4d6a49d668eaa23b00abd3"
 }

@@ -16,8 +16,10 @@
 //
 // The harness never imports the candidate and never runs while candidate code
 // can: it gets the expectations and the render child's frame as bytes on stdin,
-// re-digests the module from disk, and is the sole author of the verdict — each
-// render present, non-empty and carrying the declared texts, the Puck render
+// re-digests the module from disk, and is the sole author of the verdict — the
+// config's field names, types and defaultProps those component.json declares
+// (C11; the child reports each default only as a digest and a few fixed words),
+// each render present, non-empty and carrying the declared texts, the Puck render
 // carrying the value the orchestrator chose for one text field (a value no
 // file, report or frame written before the render ran can hold), the output
 // digests. Its report goes to fd 3, the orchestrator's pipe, never to a file.
@@ -79,6 +81,72 @@ function report(text) {
 function firstLines(err) {
 	return String(err?.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err);
 }
+
+/**
+ * A value's canonical JSON text (object keys sorted, no whitespace), or null
+ * when it is not JSON: a function, symbol or bigint, a non-finite number, an
+ * object that is not plain (a Date, a class instance), an undefined array
+ * item, a React element (its $$typeof is a symbol), or a cycle or throwing
+ * getter (the caller catches the error).
+ */
+function canonicalJson(value) {
+	if (value === null || typeof value === "boolean" || typeof value === "string") return rawStringify(value);
+	if (typeof value === "number") return Number.isFinite(value) ? rawStringify(value) : null;
+	if (Array.isArray(value)) {
+		const items = [];
+		for (const item of value) {
+			const text = canonicalJson(item);
+			if (text === null) return null;
+			items.push(text);
+		}
+		return `[${items.join(",")}]`;
+	}
+	if (typeof value === "object") {
+		const proto = Object.getPrototypeOf(value);
+		if (proto !== Object.prototype && proto !== null) return null;
+		const members = [];
+		for (const key of Object.keys(value).sort()) {
+			if (value[key] === undefined) continue;
+			const text = canonicalJson(value[key]);
+			if (text === null) return null;
+			members.push(`${rawStringify(key)}:${text}`);
+		}
+		return `{${members.join(",")}}`;
+	}
+	return null;
+}
+
+/** "an array of 4 items": a few fixed words for a canonical JSON text, never the value itself. */
+function describeJson(text) {
+	const count = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+	if (text === '""') return "an empty string";
+	if (text.startsWith('"')) return "a string";
+	if (text === "[]") return "an empty array";
+	if (text.startsWith("[")) return `an array of ${count(JSON.parse(text).length, "item")}`;
+	if (text === "{}") return "an empty object";
+	if (text.startsWith("{")) return `an object with ${count(Object.keys(JSON.parse(text)).length, "key")}`;
+	if (text === "true" || text === "false" || text === "null") return text;
+	return "a number";
+}
+
+/**
+ * The fingerprint of one field's default in a props object (C11): the digest
+ * of its canonical JSON with a short description, "absent" for no own value
+ * (or undefined), "not-json" for a value JSON cannot hold.
+ */
+function defaultFingerprint(props, name) {
+	try {
+		if (!Object.hasOwn(props, name) || props[name] === undefined) return { digest: "absent", kind: "no default" };
+		const text = canonicalJson(props[name]);
+		if (text === null) return { digest: "not-json", kind: "a value that is not JSON" };
+		return { digest: digest(text), kind: describeJson(text) };
+	} catch {
+		return { digest: "not-json", kind: "a value that is not JSON" };
+	}
+}
+/** The descriptions describeJson and defaultFingerprint write: the only ones a verdict repeats from the child. */
+const DEFAULT_KIND =
+	/^(no default|a value that is not JSON|an empty string|a string|an empty array|an array of [1-9][0-9]{0,8} items?|an empty object|an object with [1-9][0-9]{0,8} keys?|true|false|null|a number)$/;
 
 // react-dom/server escapes these five characters in text and attribute values,
 // so a declared text appears in the rendered HTML in this form ("We'll" is
@@ -261,6 +329,11 @@ async function renderChild(io) {
 			]),
 		);
 		const base = config.defaultProps ?? {};
+		if (typeof base !== "object" || base === null || Array.isArray(base))
+			throw new Error("default export's defaultProps is not an object");
+		// Each declared field's default as defaultProps holds it (C11), fingerprinted
+		// before any render can change it; the harness compares it with the declaration.
+		frame.meta.defaults = Object.fromEntries(frame.meta.fields.map((name) => [name, defaultFingerprint(base, name)]));
 		const direct = renderToString(
 			React.createElement(config.render, {
 				...base,
@@ -521,6 +594,31 @@ function judge(io) {
 		}
 		if (io.nonce && !puck.includes(io.nonce))
 			throw new Error("Puck's render lacks the value the observer chose for the render (no render with these props)");
+		// C11: defaultProps carries the declared defaults. The observer renders and
+		// judges the declared defaults (its props override defaultProps), so a
+		// declaration that differs certifies a first render Puck never shows: the
+		// v0.1.38 footer declared its metrics and links empty beside four metrics
+		// and six links in defaultProps, and certification rendered them empty. A
+		// field without a declared default has none in defaultProps, or that default
+		// reaches the first render unjudged (C16). The child's descriptions are
+		// candidate data: only a known phrase is repeated. Judged once the frame is
+		// shown to be this run's render (the value above), so a forged frame is named as one.
+		if (io.declaredDefaults && typeof io.declaredDefaults === "object") {
+			const got =
+				meta.defaults && typeof meta.defaults === "object" && !Array.isArray(meta.defaults) ? meta.defaults : {};
+			const shown = (k) => (typeof k === "string" && DEFAULT_KIND.test(k) ? k : "an undescribed value");
+			const differ = [];
+			for (const name of wantFields) {
+				const want = defaultFingerprint(io.declaredDefaults, name);
+				const have = got[name] && typeof got[name] === "object" ? got[name] : {};
+				if (have.digest !== want.digest)
+					differ.push(`${name} is ${shown(have.kind)} in defaultProps and ${want.kind} in component.json`);
+			}
+			if (differ.length)
+				throw new Error(
+					`default values differ from the declared defaults: ${differ.join("; ")}; each declared field's defaultProps value is its editableFields default, the same JSON value, and a field without a declared default has none in defaultProps (C11): the validator renders and judges the declared defaults, so they must be the component's first render`,
+				);
+		}
 		result.directHtmlDigest = digest(direct);
 		result.puckHtmlDigest = digest(puck);
 		result.htmlSample = direct.slice(0, 512);
