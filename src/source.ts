@@ -29,13 +29,16 @@ import type { BuildSupportProfile, ValidatorProfile } from "./profiles.js";
 export const fieldTypes = [
 	"text",
 	"textarea",
+	"richtext",
 	"number",
 	"select",
 	"radio",
+	"checkbox",
 	"array",
 	"object",
 	"external",
 	"custom",
+	"slot",
 ] as const;
 export type FieldType = (typeof fieldTypes)[number];
 
@@ -353,6 +356,9 @@ function readDeclaration(files: Map<string, Buffer>): ComponentDeclaration {
 		names.add(field.name);
 		const out: EditableField = { name: field.name, type: field.type as FieldType };
 		if ("default" in field) out.default = field.default;
+		const typeRule = fieldDefaultRule(out);
+		if (typeRule)
+			throw new SourceError("CANDIDATE_BUILD_FAILED", `component.json: ${out.type} field ${out.name}: ${typeRule}`);
 		return out;
 	});
 	const declaration: ComponentDeclaration = {
@@ -367,6 +373,38 @@ function readDeclaration(files: Map<string, Buffer>): ComponentDeclaration {
 	};
 	if ("interaction" in doc) declaration.interaction = readInteraction(doc.interaction);
 	return declaration;
+}
+
+/** Markup as Puck's richtext render recognizes it (a value it parses as HTML instead of text). */
+const richtextMarkup = /<\/?[a-z][\s\S]*>/i;
+
+// fieldDefaultRule states what the declared default of a richtext, checkbox or
+// slot field breaks (DEC-061), or nothing. A richtext value is a string in a
+// direct render and a node under Puck's Render, which parses markup itself, so
+// its default is plain text that both show alike; a checkbox value is a list of
+// option values; Puck's slot render maps the slot's value, so the default is the
+// empty slot, whose content the editor places.
+function fieldDefaultRule(f: EditableField): string | undefined {
+	const has = f.default !== undefined;
+	switch (f.type) {
+		case "richtext":
+			if (has && (typeof f.default !== "string" || richtextMarkup.test(f.default)))
+				return "a richtext default is plain text without markup (C07)";
+			return undefined;
+		case "checkbox": {
+			const v = f.default;
+			const scalar = (x: unknown) => ["string", "number", "boolean"].includes(typeof x);
+			if (has && !(Array.isArray(v) && v.every(scalar) && new Set(v).size === v.length))
+				return "a checkbox default is a list of distinct option values (C07)";
+			return undefined;
+		}
+		case "slot":
+			if (!(Array.isArray(f.default) && f.default.length === 0))
+				return "a slot field declares the default [] (the empty slot) and defaultProps holds [] (C07)";
+			return undefined;
+		default:
+			return undefined;
+	}
 }
 
 // readInteraction bounds the component's interaction declaration: one

@@ -76,6 +76,39 @@ function listFiles(dir: string, rel = ""): string[] {
 	return out;
 }
 
+/**
+ * The first two packaged paths that differ only by case, every path prefix
+ * (directories included) folded by lower-casing, as Control's archive intake
+ * folds them (anvilkit-agent-control internal/domain/archive.go, pathSet.add)
+ * before it refuses the package. The paths are ASCII (the source's segment
+ * pattern and the trusted names), where JavaScript's and Go's lower-casing agree.
+ */
+export function caseAlias(paths: string[]): [string, string] | undefined {
+	const seen = new Map<string, string>();
+	for (const p of paths) {
+		const segs = p.split("/");
+		for (let i = 1; i <= segs.length; i++) {
+			const prefix = segs.slice(0, i).join("/");
+			const prev = seen.get(prefix.toLowerCase());
+			if (prev === undefined) seen.set(prefix.toLowerCase(), prefix);
+			else if (prev !== prefix) return [prev, prefix];
+		}
+	}
+	return undefined;
+}
+
+/** The source path a packaged path was built or copied from, when one is known. */
+function packagedFrom(source: SourceRead, packaged: string): string | undefined {
+	if (packaged.startsWith("dist/types/")) {
+		const rest = packaged.slice("dist/types/".length).replace(/\.d\.ts$/, "");
+		for (const candidate of [`src/${rest}.ts`, `src/${rest}.tsx`]) if (source.files.has(candidate)) return candidate;
+		const dir = `src/${rest}`;
+		return [...source.files.keys()].some((k) => k.startsWith(`${dir}/`)) ? dir : undefined;
+	}
+	const rel = packaged.startsWith("dist/") ? packaged.slice("dist/".length) : packaged;
+	return source.files.has(rel) ? rel : undefined;
+}
+
 function fileEntry(root: string, rel: string): ArtifactFile {
 	const bytes = readFileSync(path.join(root, rel));
 	return { path: rel, digest: sha256(bytes), sizeBytes: sequence(bytes.byteLength) };
@@ -303,6 +336,19 @@ export async function buildComponent(
 	for (const f of listFiles(packageDir)) chmodSync(path.join(packageDir, f), 0o644);
 
 	const files = listFiles(packageDir);
+	// Control's intake refuses a package with case aliases after certification,
+	// where no round can repair it (ProductDetails, v0.1.39): src/ProductDetails.tsx
+	// and src/productDetails.ts passed C02 but built two declarations of one name.
+	const alias = caseAlias(files);
+	if (alias) {
+		const from = alias.map((p) => packagedFrom(source, p));
+		throw new BuildError(
+			"CANDIDATE_BUILD_FAILED",
+			`the package entries ${alias[0]} and ${alias[1]} differ only by case, which the package intake refuses` +
+				(from[0] && from[1] ? `; they are built from ${from[0]} and ${from[1]}` : "") +
+				": rename a source file so that source file names stay distinct ignoring case and extension (C02)",
+		);
+	}
 	const tarballName = `${source.packageName.replace(/^@/, "").replace("/", "-")}-${source.packageVersion}.tgz`;
 	const tarball = path.join(workDir, tarballName);
 	await writeTarball(stageDir, files, tarball);

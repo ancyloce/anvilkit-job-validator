@@ -653,8 +653,10 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 	const fieldTypes = Object.fromEntries(decl.editableFields.map((f) => [f.name, f.type]));
 	const defaultProps: Record<string, unknown> = {};
 	for (const f of decl.editableFields) if (f.default !== undefined) defaultProps[f.name] = f.default;
+	// Display text (C16): text, textarea and richtext defaults (a richtext default
+	// is plain text, which a direct render and Puck's richtext render show alike).
 	const textFields = decl.editableFields.filter(
-		(f) => (f.type === "text" || f.type === "textarea") && typeof f.default === "string",
+		(f) => (f.type === "text" || f.type === "textarea" || f.type === "richtext") && typeof f.default === "string",
 	);
 	const expectedTexts = textFields.filter((f) => (f.default as string).length > 0).map((f) => f.default as string);
 	// Which declared field owns each expected default, and what the source must do
@@ -666,24 +668,34 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 		defaultFields[text] = owners.join(" and the ");
 	}
 	const renderedDefaultRemedy =
-		"every non-empty text or textarea default is visible text of the component on the first render: " +
+		"every non-empty text, textarea or richtext default is visible text of the component on the first render: " +
 		"a URL, colour, identifier or other non-display value takes an empty default and a constant fallback in code, " +
 		"and an aria-label, title, alt or placeholder value is a constant (C16)";
 	// The field the observer renders with a value of its own (the Puck render
-	// of the SSR check, the browser's re-render): the first declared text
-	// field; a component without one has nothing to show.
-	const nonceField = textFields[0]?.name ?? null;
+	// of the SSR check, the browser's re-render): the first declared text or
+	// textarea field; a component without one has nothing to show.
+	const nonceField = textFields.find((f) => f.type !== "richtext")?.name ?? null;
 	// The field-sinks probes (B1 run 10's security review: a link href without
 	// a scheme check, an unchecked accent in an inline style): the SSR render
-	// child renders the component once per probe, first with every text and
-	// textarea field set to each hostile value, then with each select or radio
-	// field alone set to each (the others keep their defaults, so a choice that
-	// gates a sink stays open). The harness refuses a probe render that throws,
-	// an unsafe URL scheme in a URL attribute, the marker in CSS or a script,
-	// and the marker as markup. The marker is this run's own, so a value that
-	// reaches a sink shows as such.
-	const freeTextFields = decl.editableFields.filter((f) => f.type === "text" || f.type === "textarea");
-	const choiceFields = decl.editableFields.filter((f) => f.type === "select" || f.type === "radio");
+	// child renders the component once per probe, first with every text,
+	// textarea and richtext field set to each hostile value, then with each
+	// select, radio or checkbox field alone set to each (a checkbox as a one-item
+	// list; the others keep their defaults, so a choice that gates a sink stays
+	// open). The harness refuses a probe render that throws, an unsafe URL
+	// scheme in a URL attribute, the marker in CSS or a script, and the marker
+	// as markup. The marker is this run's own, so a value that reaches a sink
+	// shows as such.
+	const freeTextFields = decl.editableFields.filter(
+		(f) => f.type === "text" || f.type === "textarea" || f.type === "richtext",
+	);
+	const choiceFields = decl.editableFields.filter(
+		(f) => f.type === "select" || f.type === "radio" || f.type === "checkbox",
+	);
+	const listFields = choiceFields.filter((f) => f.type === "checkbox").map((f) => f.name);
+	const choiceValue = (name: string, v: unknown): unknown => (listFields.includes(name) ? [v] : v);
+	// Puck renders a slot's value as a component; the observer's direct renders
+	// pass an empty one (DEC-061).
+	const slotFields = decl.editableFields.filter((f) => f.type === "slot").map((f) => f.name);
 	const probeMarker = `anvilkit-probe-${randomBytes(8).toString("hex")}`;
 	const probeValues = [
 		`javascript:alert(1)//${probeMarker}`,
@@ -700,17 +712,23 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 	}
 	for (const f of choiceFields) {
 		for (const value of probeValues)
-			probes.push({ value, field: f.name, type: f.type, props: { ...defaultProps, [f.name]: value } });
+			probes.push({
+				value,
+				field: f.name,
+				type: f.type,
+				props: { ...defaultProps, [f.name]: choiceValue(f.name, value) },
+			});
 	}
-	// The gated probes: the render child opens each select or radio option of
-	// the component's own Puck config beside every text field set to one value
-	// that is both a data: URL and markup, so a sink a choice keeps closed by
-	// default is probed too (each judged against the same option without it).
+	// The gated probes: the render child opens each select, radio or checkbox
+	// option of the component's own Puck config beside every text field set to
+	// one value that is both a data: URL and markup, so a sink a choice keeps
+	// closed by default is probed too (each judged against the same option without it).
 	const gateValue = ` Data:text/html,"'><${probeMarker} ${probeMarker}="1"></${probeMarker}>`;
 	const gate =
 		freeTextFields.length && choiceFields.length
 			? {
 					fields: choiceFields.map((f) => f.name),
+					lists: listFields,
 					props: Object.fromEntries(freeTextFields.map((f) => [f.name, gateValue])),
 				}
 			: undefined;
@@ -746,6 +764,7 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					puckProps: nonce && nonceField ? { ...defaultProps, [nonceField]: nonce } : defaultProps,
 					probeProps: probes.map((p) => p.props),
 					gate,
+					slotFields,
 				}),
 				report: { maxBytes: maxRenderFrameBytes },
 				timeoutMs: limits.hostCheckTimeoutMs,
@@ -775,8 +794,11 @@ export async function certify(input: CertifyInput): Promise<Certification> {
 					expectedTexts,
 					defaultFields,
 					remedy: renderedDefaultRemedy,
+					// Puck's server render of a richtext value is its own Suspense
+					// fallback, which writes the value unescaped: judged in the
+					// direct render and the browser instead.
 					puckExpectedTexts: textFields
-						.filter((f) => f.name !== nonceField && (f.default as string).length > 0)
+						.filter((f) => f.name !== nonceField && f.type !== "richtext" && (f.default as string).length > 0)
 						.map((f) => f.default as string),
 					nonce,
 					probe: {
