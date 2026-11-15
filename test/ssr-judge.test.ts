@@ -275,8 +275,8 @@ describe("the SSR judge's field sinks (the field-sinks check; B1 run 10's securi
 			inputs([styled, link(values[1] ?? ""), { error: "Error: unknown accent" }], [accent, target, accent]),
 		);
 		expect(result?.errors).toEqual([
-			`with the select field accent set to ${JSON.stringify(values[0])}, the inline style of <div> carries the value; a select or radio value reaches an inline style only after it matches one of the field's options`,
-			`with the radio field target set to ${JSON.stringify(values[1])}, <a href> renders a data: URL; a select or radio value reaches a URL attribute only after it matches one of the field's options`,
+			`with the select field accent set to ${JSON.stringify(values[0])}, the inline style of <div> carries the value; a select, radio or checkbox value reaches an inline style only after it matches one of the field's options`,
+			`with the radio field target set to ${JSON.stringify(values[1])}, <a href> renders a data: URL; a select, radio or checkbox value reaches a URL attribute only after it matches one of the field's options`,
 			`the component threw when the select field accent held ${JSON.stringify(values[0])}: Error: unknown accent`,
 		]);
 	});

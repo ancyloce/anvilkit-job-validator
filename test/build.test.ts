@@ -2,10 +2,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BuildError, buildComponent } from "../src/build.js";
+import { BuildError, buildComponent, caseAlias } from "../src/build.js";
 import { callerIdentity } from "../src/isolation.js";
 import { loadProfiles } from "../src/profiles.js";
 import { readSource } from "../src/source.js";
+import { verdictFor } from "../src/validate.js";
 import { heroSource, removeTree, scratchCopy } from "./helpers.js";
 
 const profiles = loadProfiles();
@@ -209,5 +210,42 @@ writeSync(3, JSON.stringify({ ok: true, diagnostics: [], warnings: [], emitted: 
 		const out = await buildComponent(source, profiles, work(), { identity: callerIdentity() });
 		expect(out.step.identity).toBe("caller");
 		expect(out.step.code).toBe(0);
+	});
+});
+
+describe("case aliases in the built package (DEC-059)", () => {
+	it("folds every path prefix as Control's archive intake does, on its own test pairs and ProductDetails'", () => {
+		// The pairs of Control's archive_test.go ("file case alias", "parents of two
+		// files aliasing each other") and the v0.1.39 ProductDetails declarations.
+		expect(caseAlias(["src/Index.tsx", "src/index.tsx"])).toEqual(["src/Index.tsx", "src/index.tsx"]);
+		expect(caseAlias(["Src/a.ts", "src/b.ts"])).toEqual(["Src", "src"]);
+		expect(caseAlias(["dist/types/ProductDetails.d.ts", "dist/types/productDetails.d.ts"])).toEqual([
+			"dist/types/ProductDetails.d.ts",
+			"dist/types/productDetails.d.ts",
+		]);
+		expect(caseAlias(["dist/types/Views/a.d.ts", "dist/types/views/b.d.ts"])).toEqual([
+			"dist/types/Views",
+			"dist/types/views",
+		]);
+		expect(
+			caseAlias(["README.md", "dist/index.js", "dist/types/hero.d.ts", "dist/types/index.d.ts", "package.json"]),
+		).toBeUndefined();
+		expect(caseAlias(["dist/types/a/x.d.ts", "dist/types/a/y.d.ts"])).toBeUndefined();
+	});
+
+	it("refuses, as repairable, a source whose declarations differ only by case, naming the sources", async () => {
+		const dir = copy();
+		writeFileSync(path.join(dir, "src", "Hero.ts"), 'export const heroLabel = "Hero";\n');
+		const entry = path.join(dir, "src", "index.tsx");
+		writeFileSync(
+			entry,
+			`import { heroLabel } from "./Hero";\n${readFileSync(entry, "utf8").replace('label: "Hero"', "label: heroLabel")}`,
+		);
+		await buildFails(
+			dir,
+			"CANDIDATE_BUILD_FAILED",
+			/the package entries dist\/types\/Hero\.d\.ts and dist\/types\/hero\.d\.ts differ only by case, which the package intake refuses; they are built from src\/Hero\.ts and src\/hero\.tsx: rename a source file/,
+		);
+		expect(verdictFor(profiles, "CANDIDATE_BUILD_FAILED")).toBe("repairable");
 	});
 });

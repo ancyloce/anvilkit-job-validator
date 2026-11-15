@@ -531,7 +531,7 @@ export default config;
 		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
 		expect(sinkDetail(cert)).toContain("with the radio field align set to");
 		expect(sinkDetail(cert)).toContain(
-			"a select or radio value reaches an inline style only after it matches one of the field's options",
+			"a select, radio or checkbox value reaches an inline style only after it matches one of the field's options",
 		);
 		expect(sinkDetail(cert)).not.toContain("with every text field");
 	});
@@ -1057,5 +1057,175 @@ describe("P2.4: the component's own interaction declaration", () => {
 			);
 			expect(() => readSource(dir, opts), name).toThrow(/component.json: interaction/);
 		}
+	});
+});
+
+describe("DEC-061: richtext, checkbox and slot fields", () => {
+	const title = "Build once, certify exactly";
+	const subtitle = "A reviewed fixed component: complete source, protected build, independent verdict.";
+	const fields = [
+		{ name: "title", type: "text", default: title },
+		{ name: "subtitle", type: "richtext", default: subtitle },
+		{ name: "align", type: "radio", default: "left" },
+		{ name: "ctaLabel", type: "text", default: "Get started" },
+		{ name: "tags", type: "checkbox", default: ["new"] },
+		{ name: "aside", type: "slot", default: [] },
+	];
+	/** The fixture rewritten with a richtext subtitle, a checkbox of tags and a slot. */
+	function newTypes(variant: { markup?: boolean; tagStyle?: boolean; fields?: unknown[] } = {}): string {
+		const { dir } = scratchCopy(heroSource, "anvilkit-validator-dec061-");
+		scratch.push(dir);
+		const subtitleJsx = variant.markup
+			? '<div className="ak-hero__subtitle" dangerouslySetInnerHTML={{ __html: String(subtitle) }} />'
+			: '<div className="ak-hero__subtitle">{subtitle}</div>';
+		writeFileSync(
+			path.join(dir, "src", "hero.tsx"),
+			`import type { RichText, SlotComponent } from "@puckeditor/core";
+import { useState } from "react";
+
+export interface HeroViewProps {
+	title: string;
+	subtitle: RichText;
+	align: "left" | "center";
+	ctaLabel: string;
+	tags: string[];
+	Aside: SlotComponent;
+}
+
+export function Hero({ title, subtitle, align, ctaLabel, tags, Aside }: HeroViewProps) {
+	const [clicks, setClicks] = useState(0);
+	return (
+		<section className={\`ak-hero ak-hero--\${align}\`} data-anvilkit-component="Hero"${variant.tagStyle ? " style={{ color: tags[0] }}" : ""}>
+			<span className="ak-hero__mark" aria-hidden="true" />
+			<h1 className="ak-hero__title">{title}</h1>
+			${subtitleJsx}
+			<ul>{tags.map((t) => <li key={t}>{t}</li>)}</ul>
+			<Aside />
+			<button type="button" className="ak-hero__cta" data-clicks={clicks} onClick={() => setClicks(clicks + 1)}>
+				{ctaLabel}
+			</button>
+		</section>
+	);
+}
+`,
+		);
+		writeFileSync(
+			path.join(dir, "src", "index.tsx"),
+			`import type { ComponentConfig, RichText, Slot } from "@puckeditor/core";
+import { Hero } from "./hero";
+
+export interface HeroProps {
+	title: string;
+	subtitle: RichText;
+	align: "left" | "center";
+	ctaLabel: string;
+	tags: string[];
+	aside: Slot;
+}
+
+export const config: ComponentConfig<HeroProps> = {
+	label: "Hero",
+	fields: {
+		title: { type: "text" },
+		subtitle: { type: "richtext" },
+		align: { type: "radio", options: [{ label: "Left", value: "left" }, { label: "Center", value: "center" }] },
+		ctaLabel: { type: "text" },
+		tags: { type: "checkbox", options: [{ label: "New", value: "new" }, { label: "Sale", value: "sale" }] },
+		aside: { type: "slot" },
+	},
+	defaultProps: {
+		title: ${JSON.stringify(title)},
+		subtitle: ${JSON.stringify(subtitle)},
+		align: "left",
+		ctaLabel: "Get started",
+		tags: ["new"],
+		aside: [],
+	},
+	render: ({ title, subtitle, align, ctaLabel, tags, aside }) => (
+		<Hero title={title} subtitle={subtitle} align={align} ctaLabel={ctaLabel} tags={tags} Aside={aside} />
+	),
+};
+
+export { Hero };
+export default config;
+`,
+		);
+		const decl = JSON.parse(readFileSync(path.join(dir, "component.json"), "utf8")) as Record<string, unknown>;
+		decl.editableFields = variant.fields ?? fields;
+		writeFileSync(path.join(dir, "component.json"), `${JSON.stringify(decl, null, 2)}\n`);
+		return dir;
+	}
+	const certifyDir = async (dir: string, hostChecks: { ssr: boolean; browser: boolean }) => {
+		const src = readSource(dir, opts);
+		const b = await buildComponent(src, profiles, work(), { identity });
+		return certify({ source: src, build: b, profiles, toolchain, identity, hostChecks });
+	};
+	const detail = (cert: Certification, check: string) => cert.checks.find((c) => c.name === check)?.detail ?? "";
+
+	it("certifies a component with a richtext, a checkbox and a slot field, SSR and browser", async () => {
+		const cert = await certifyDir(newTypes(), { ssr: true, browser: true });
+		expect(cert.checks.filter((c) => c.status !== "pass").map((c) => `${c.name}:${c.detail}`)).toEqual([]);
+		expect(cert.verdict).toBe("certified");
+		// Probes: title, subtitle and ctaLabel together (3); align and tags field by
+		// field (3 each, tags as a one-item list). Gated: align's "center" and tags'
+		// "sale" (["new"] is the default).
+		expect((cert.host.ssr as { sinks?: unknown }).sinks).toEqual({ ok: true, probes: 9, gated: 2, errors: [] });
+	});
+
+	it("refuses a richtext value rendered as markup through dangerouslySetInnerHTML", async () => {
+		const cert = await certifyDir(newTypes({ markup: true }), { ssr: true, browser: false });
+		expect(cert.checks.find((c) => c.name === "ssr-render")?.status).toBe("pass");
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(detail(cert, "field-sinks")).toContain("the value is rendered as markup");
+	});
+
+	it("refuses a checkbox value in an inline style, probed as a one-item list", async () => {
+		const cert = await certifyDir(newTypes({ tagStyle: true }), { ssr: true, browser: false });
+		fails(cert, "CANDIDATE_TEST_FAILED", "repairable", "field-sinks");
+		expect(detail(cert, "field-sinks")).toContain("with the checkbox field tags set to");
+		expect(detail(cert, "field-sinks")).toContain(
+			"a select, radio or checkbox value reaches an inline style only after it matches one of the field's options",
+		);
+	});
+
+	it("bounds the defaults: plain-text richtext, a list of option values, the empty slot", () => {
+		const swap = (name: string, field: Record<string, unknown>) => fields.map((f) => (f.name === name ? field : f));
+		for (const [label, edited, text] of [
+			[
+				"richtext markup",
+				swap("subtitle", { ...fields[1], default: "<p>Hi</p>" }),
+				/richtext field subtitle: a richtext default is plain text without markup/,
+			],
+			[
+				"checkbox scalar",
+				swap("tags", { ...fields[4], default: "new" }),
+				/checkbox field tags: a checkbox default is a list of distinct option values/,
+			],
+			[
+				"checkbox repeat",
+				swap("tags", { ...fields[4], default: ["new", "new"] }),
+				/checkbox field tags: a checkbox default is a list/,
+			],
+			[
+				"slot without default",
+				swap("aside", { name: "aside", type: "slot" }),
+				/slot field aside: a slot field declares the default \[\]/,
+			],
+			[
+				"slot with content",
+				swap("aside", { ...fields[5], default: [{ type: "Hero" }] }),
+				/slot field aside: a slot field declares the default \[\]/,
+			],
+		] as const) {
+			expect(() => readSource(newTypes({ fields: [...edited] }), opts), label).toThrow(text);
+		}
+		expect(readSource(newTypes(), opts).declaration.editableFields.map((f) => f.type)).toEqual([
+			"text",
+			"richtext",
+			"radio",
+			"text",
+			"checkbox",
+			"slot",
+		]);
 	});
 });
