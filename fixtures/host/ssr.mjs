@@ -26,10 +26,11 @@
 //
 // Field sinks (the field-sinks check, after B1 run 10's security review): after
 // the two renders, the render child renders the component once per probe the
-// orchestrator chose: with every text and textarea field set to a hostile value
-// (a javascript: URL, a data: URL, markup), then with each select or radio
-// field alone set to each of them, every value carrying a per-run marker;
-// then, for each option a select or radio field lists in the component's own
+// orchestrator chose: with every text, textarea and richtext field set to a
+// hostile value (a javascript: URL, a data: URL, markup), then with each select,
+// radio or checkbox field alone set to each of them (a checkbox as a one-item
+// list), every value carrying a per-run marker; then, for each option a select,
+// radio or checkbox field lists in the component's own
 // config, with that option opened and every text field set to one more value
 // (a data: URL that is also markup), so a sink a choice gates is probed too. The
 // harness refuses a probe render that threw, a URL attribute with a
@@ -57,7 +58,7 @@ import * as React from "react";
 import { renderToString } from "react-dom/server";
 
 const MAX_HTML_BYTES = 4 * 1024 * 1024;
-// The gated field-sink probes: options opened per select or radio field, and in all.
+// The gated field-sink probes: options opened per select, radio or checkbox field, and in all.
 const MAX_GATE_OPTIONS = 8;
 const MAX_GATED = 32;
 // Captured before any candidate import: the render child uses these to write
@@ -251,8 +252,8 @@ function unsafeUrls(tags) {
 /**
  * What one probe render shows of a field value reaching a sink: one sentence
  * per sink, empty when none. `probe` describes the render: its value, the
- * select or radio field it set alone (`field`, `type`), or the select or
- * radio option it opened beside the text values (`gate`). An unsafe URL that
+ * select, radio or checkbox field it set alone (`field`, `type`), or the
+ * option it opened beside the text values (`gate`). An unsafe URL that
  * the baseline render (the same props without the hostile value) already
  * has is the component's own constant, not a field sink, and is not counted.
  */
@@ -266,10 +267,10 @@ function fieldSinkFindings(html, baselineHtml, probe, marker) {
 			? `with every text field set to ${shown} and the ${probe.gate.type} field ${probe.gate.field} set to ${JSON.stringify(probe.gate.option)}`
 			: `with every text field set to ${shown}`;
 	const urlRule = choice
-		? "a select or radio value reaches a URL attribute only after it matches one of the field's options"
+		? "a select, radio or checkbox value reaches a URL attribute only after it matches one of the field's options"
 		: "a text value reaches a URL attribute only after a scheme check that keeps relative, http:, https:, mailto: and tel: URLs";
 	const styleRule = choice
-		? "a select or radio value reaches an inline style only after it matches one of the field's options"
+		? "a select, radio or checkbox value reaches an inline style only after it matches one of the field's options"
 		: "a text value reaches an inline style only after it matches a fixed pattern";
 	const { raw, markup } = splitRawText(html);
 	for (const r of raw) {
@@ -311,8 +312,12 @@ function fieldSinkFindings(html, baselineHtml, probe, marker) {
 // The render child: candidate code runs here, with no path to the harness's
 // report and no file the orchestrator reads.
 async function renderChild(io) {
-	const { modulePath, puckType, directProps, puckProps, probeProps, gate } = io;
+	const { modulePath, puckType, directProps, puckProps, probeProps, gate, slotFields } = io;
 	const frame = { schemaVersion: 1, meta: { errors: [] } };
+	// Puck renders a slot's value as a component (its slot transform); a direct
+	// render has no Puck to transform it, so each slot field gets an empty one.
+	const emptySlot = () => null;
+	const slots = Object.fromEntries((Array.isArray(slotFields) ? slotFields : []).map((n) => [String(n), emptySlot]));
 	try {
 		const mod = await import(pathToFileURL(modulePath).href);
 		frame.meta.exports = Object.keys(mod).sort();
@@ -338,6 +343,7 @@ async function renderChild(io) {
 			React.createElement(config.render, {
 				...base,
 				...(directProps ?? {}),
+				...slots,
 				id: "ssr-direct",
 				puck: { renderDropZone: () => null, isEditing: false, dragRef: null, metadata: {} },
 			}),
@@ -364,6 +370,7 @@ async function renderChild(io) {
 				React.createElement(config.render, {
 					...base,
 					...props,
+					...slots,
 					id: `ssr-probe-${key}`,
 					puck: { renderDropZone: () => null, isEditing: false, dragRef: null, metadata: {} },
 				}),
@@ -386,20 +393,26 @@ async function renderChild(io) {
 			}
 		};
 		const probes = (Array.isArray(probeProps) ? probeProps : []).map((props, i) => attempt(props, i));
-		// The gated probes: the text values again with each select or radio
-		// option opened that differs from the field's default (the options as
-		// the component's own Puck config lists them), each beside a baseline
-		// render of that option without the text values. Bounded per field and
-		// in total.
+		// The gated probes: the text values again with each select, radio or
+		// checkbox option opened that differs from the field's default (the
+		// options as the component's own Puck config lists them; a checkbox's as
+		// a one-item list), each beside a baseline render of that option without
+		// the text values. Bounded per field and in total.
 		const gated = [];
 		const gateFields = Array.isArray(gate?.fields) ? gate.fields.map(String) : [];
+		const lists = new Set(Array.isArray(gate?.lists) ? gate.lists.map(String) : []);
+		const opened = (field, v) => (lists.has(field) ? [v] : v);
+		const isDefault = (field, v) =>
+			lists.has(field)
+				? Array.isArray(base[field]) && base[field].length === 1 && base[field][0] === v
+				: v === base[field];
 		for (const field of gateFields) {
 			const values = [];
 			try {
 				const options = Array.isArray(config.fields?.[field]?.options) ? config.fields[field].options : [];
 				for (const o of options) {
 					const v = o && typeof o === "object" ? o.value : undefined;
-					if (["string", "number", "boolean"].includes(typeof v) && v !== base[field] && !values.includes(v))
+					if (["string", "number", "boolean"].includes(typeof v) && !isDefault(field, v) && !values.includes(v))
 						values.push(v);
 				}
 			} catch {
@@ -407,8 +420,8 @@ async function renderChild(io) {
 			}
 			for (const option of values.slice(0, MAX_GATE_OPTIONS)) {
 				if (gated.length >= MAX_GATED) break;
-				const baseline = attempt({ [field]: option }, `gate-${gated.length}-base`);
-				const html = attempt({ ...(gate.props ?? {}), [field]: option }, `gate-${gated.length}`);
+				const baseline = attempt({ [field]: opened(field, option) }, `gate-${gated.length}-base`);
+				const html = attempt({ ...(gate.props ?? {}), [field]: opened(field, option) }, `gate-${gated.length}`);
 				gated.push({ field, option, baseline, probe: html });
 			}
 		}
@@ -441,10 +454,10 @@ function renderError(p) {
 /**
  * The field-sinks verdict on the probe renders of the frame: one per probe the
  * observer described (`probe.probes`: each a value carrying `probe.marker`
- * and, for a select or radio probe, its field and type), in order, then the
- * gated renders the render child made with `probe.gateValue` (each judged
- * against its own baseline). A component without a text, textarea, select or
- * radio field has nothing to probe.
+ * and, for a select, radio or checkbox probe, its field and type), in order,
+ * then the gated renders the render child made with `probe.gateValue` (each
+ * judged against its own baseline). A component without a text, textarea,
+ * richtext, select, radio or checkbox field has nothing to probe.
  */
 function judgeSinks(probe, frame) {
 	const asked = Array.isArray(probe?.probes) ? probe.probes : [];
