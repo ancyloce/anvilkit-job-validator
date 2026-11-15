@@ -41,14 +41,17 @@ changes its digest, and with it every certification's binding.
 **Field sinks.** `field-sinks` (after B1 run 10's security review found a link `href`
 without a scheme check and an unchecked accent in an inline style) is judged by
 the SSR harness from extra renders of the SSR render child, each value carrying
-a marker of the run:
+a marker of the run (a `slot` field gets an empty slot component in these
+direct renders, since only Puck's `Render` turns a slot's value into one):
 
-- every `text` and `textarea` field at once set to each of three values (a
-  `javascript:` URL, a mixed-case `data:` URL, markup that leaves an attribute);
-- each `select` and `radio` field alone set to each of them, the others at
-  their defaults;
-- for each option a `select` or `radio` field lists in the component's own Puck
-  config (other than its default; at most 8 per field and 32 in all), that
+- every `text`, `textarea` and `richtext` field at once set to each of three
+  values (a `javascript:` URL, a mixed-case `data:` URL, markup that leaves an
+  attribute);
+- each `select`, `radio` and `checkbox` field alone set to each of them (a
+  `checkbox` as a one-item list), the others at their defaults;
+- for each option a `select`, `radio` or `checkbox` field lists in the
+  component's own Puck config (other than its default; at most 8 per field and
+  32 in all), that
   option beside every text field set to one value that is both a `data:` URL
   and markup, judged against the same option without it, so a sink a choice
   keeps closed by default is probed too.
@@ -66,6 +69,23 @@ eight sentences. It reads react-dom/server's serialization only, so it does not
 see what a component renders after hydration (a link gated by `useEffect`). It
 does not probe `number` or nested `array`/`object` fields, nor a value split by
 a tab inside its scheme.
+
+**Richtext, checkbox and slot fields** (DEC-061). The source reader refuses, as
+`CANDIDATE_BUILD_FAILED`, a `richtext` default that is not plain text (markup as
+Puck's richtext render detects it), a `checkbox` default that is not a list of
+distinct option values, and a `slot` field whose default is not exactly `[]`
+(Puck's slot render maps the value, so a missing one throws). A non-empty
+`richtext` default is display text: judged in the direct render and the browser,
+not in Puck's server render, whose Suspense fallback writes a richtext value
+unescaped through `dangerouslySetInnerHTML` (Puck's own code; certification
+judges the component, not how Puck renders an editor's markup).
+
+**Case aliases in the package** (DEC-059). Before the npm tarball is written,
+the build refuses, as `CANDIDATE_BUILD_FAILED`, two packaged paths that differ
+only by case, every path prefix folded by lower-casing as Control's archive
+intake folds it. Source paths that differ only by case are refused earlier
+(`PATH_ESCAPE`); this catches build outputs, such as the declarations of
+`src/ProductDetails.tsx` and `src/productDetails.ts`, and names both sources.
 
 ## Preview origin
 
