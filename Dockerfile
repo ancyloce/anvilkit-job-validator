@@ -83,9 +83,15 @@ COPY --chmod=0600 config.yaml /etc/anvilkit/anvilkit-validator/config.yaml
 # HOME and TMPDIR are a scratch directory nothing is read from). Chromium's
 # own sandbox runs wherever the runtime gives the step identity a user
 # namespace; the development foundation's seccomp profile does not, and the
-# browser report then records that it ran without (G-04).
+# browser report then records that it ran without (G-04). Those dependencies
+# bring in Kerberos (libgssapi-krb5-2 with libk5crypto3, libkrb5-3 and
+# libkrb5support0), absent from the base: it is upgraded to the fixed point
+# release here, after the install and while apt's lists exist
+# (CVE-2026-71199/71200/107364/112315-112323/118380/119079, B-018).
 ENV PLAYWRIGHT_BROWSERS_PATH=/anvilkit/ms-playwright
 RUN ./node_modules/.bin/playwright install --with-deps --only-shell chromium \
+ && apt-get install -y --no-install-recommends --only-upgrade libgssapi-krb5-2=1.21.3-5+deb13u2 \
+      libk5crypto3=1.21.3-5+deb13u2 libkrb5-3=1.21.3-5+deb13u2 libkrb5support0=1.21.3-5+deb13u2 \
  && rm -rf /var/lib/apt/lists/* \
  && chmod -R a+rX /anvilkit/ms-playwright
 # AC7 (P0.8): the headless shell links libgbm.so.1, which needs only libdrm,
