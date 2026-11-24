@@ -21,7 +21,7 @@ env:
   # jobs/profiles.json with validator-fixture-v1 and validator-source(-dev)-v1
   # (P0.8): the published commit of tag go/v0.1.36, the newest contracts release
   # (the one the parent's contracts gitlink is on).
-  CONTRACTS_REF: 6826e0fd16b36758c5e5a1f6271765c7134da9f9
+  CONTRACTS_REF: 0f4bbd0d95cbed44fde6e958211d017c49c50231
 permissions:
   contents: read
 jobs:
