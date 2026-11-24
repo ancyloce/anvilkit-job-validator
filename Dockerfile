@@ -48,7 +48,8 @@ FROM node:24.19.0-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930
 # point release (CVE-2026-13221/42496/8376), pinned, and so are the base's
 # gzip (CVE-2026-41992), libpcre2 (CVE-2026-86145/89157/89161/103111),
 # SQLite (CVE-2026-11822/11824) and apt with its libapt-pkg
-# (CVE-2026-109518) and zlib1g (CVE-2026-76844/85091, B-013) fixes. libxml2's
+# (CVE-2026-109518) and zlib1g (CVE-2026-76844/85091, B-013) fixes, and the
+# glibc (libc6, libc-bin) and liblzma5 point releases of the 2026-11-23 scan. libxml2's
 # CVE-2026-6653 has no fixed version in Debian 13; it arrives through
 # Chromium's libgbm1 -> mesa-libgallium -> libllvm19 and is removed below.
 # The Job runs node and the baked toolchain only: the base's
@@ -59,6 +60,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends --only-upgrade perl-base=5.40.1-6+deb13u1 \
       gzip=1.13-1+deb13u1 libpcre2-8-0=10.46-1~deb13u3 libsqlite3-0=3.46.1-7+deb13u2 \
       apt=3.0.4 libapt-pkg7.0=3.0.4 zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+      libc6=2.41-12+deb13u5 libc-bin=2.41-12+deb13u5 liblzma5=5.8.1-1+deb13u2 \
  && rm -rf /var/lib/apt/lists/* \
  && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
       /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
@@ -85,13 +87,15 @@ COPY --chmod=0600 config.yaml /etc/anvilkit/anvilkit-validator/config.yaml
 # namespace; the development foundation's seccomp profile does not, and the
 # browser report then records that it ran without (G-04). Those dependencies
 # bring in Kerberos (libgssapi-krb5-2 with libk5crypto3, libkrb5-3 and
-# libkrb5support0), absent from the base: it is upgraded to the fixed point
-# release here, after the install and while apt's lists exist
-# (CVE-2026-71199/71200/107364/112315-112323/118380/119079, B-018).
+# libkrb5support0) and FreeType (libfreetype6), absent from the base: they are
+# upgraded to their fixed point releases here, after the install and while
+# apt's lists exist (Kerberos CVE-2026-71199/71200/107364/112315-112323/118380/119079,
+# B-018; FreeType from the 2026-11-23 scan).
 ENV PLAYWRIGHT_BROWSERS_PATH=/anvilkit/ms-playwright
 RUN ./node_modules/.bin/playwright install --with-deps --only-shell chromium \
  && apt-get install -y --no-install-recommends --only-upgrade libgssapi-krb5-2=1.21.3-5+deb13u2 \
       libk5crypto3=1.21.3-5+deb13u2 libkrb5-3=1.21.3-5+deb13u2 libkrb5support0=1.21.3-5+deb13u2 \
+      libfreetype6=2.13.3+dfsg-1+deb13u2 \
  && rm -rf /var/lib/apt/lists/* \
  && chmod -R a+rX /anvilkit/ms-playwright
 # AC7 (P0.8): the headless shell links libgbm.so.1, which needs only libdrm,
